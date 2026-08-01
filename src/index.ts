@@ -2,6 +2,7 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import {
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   MessageFlags,
@@ -41,6 +42,7 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const drafts = new Map<string, TradeDraft>();
 const TRADE_COOLDOWN_MS = 2 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
+const MAX_MATCH_LINKS = 6;
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
@@ -229,17 +231,17 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       status: "open",
       closedAt: null
     });
+    published = true;
     if (interaction.guildId) {
       const matchingTrades = findOpenTradesOffering(interaction.guildId, interaction.user.id, requestedCardIds);
-      for (const matchingTrade of matchingTrades) {
-        const link = `https://discord.com/channels/${interaction.guildId}/${matchingTrade.channelId}/${matchingTrade.messageId}`;
+      if (matchingTrades.length) {
         await interaction.channel.send({
-          content: `<@${interaction.user.id}> This post is offering one or more of the cards you're trying to request: ${link}`,
+          content: `<@${interaction.user.id}>`,
+          embeds: [buildTradeMatchEmbed(draft.cardType, interaction.guildId, matchingTrades)],
           allowedMentions: { users: [interaction.user.id] }
         });
       }
     }
-    published = true;
   } finally {
     if (!published) {
       releaseTradeSlot(interaction.user.id, slot.cooldownUntil);
@@ -293,6 +295,26 @@ function getRequestedCardIds(draft: TradeDraft): string[] {
   return CARD_CATALOG[draft.cardType].cards
     .map((card) => card.id)
     .filter((cardId) => !draft.sending.includes(cardId));
+}
+
+function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrades: ReturnType<typeof findOpenTradesOffering>): EmbedBuilder {
+  const category = CARD_CATALOG[cardType];
+  const displayedTrades = matchingTrades.slice(0, MAX_MATCH_LINKS);
+  const links = displayedTrades.map((trade, index) => {
+    const link = `https://discord.com/channels/${guildId}/${trade.channelId}/${trade.messageId}`;
+    return `**${index + 1}.** [View matching trade](<${link}>)`;
+  });
+  const overflowNotice = matchingTrades.length > displayedTrades.length
+    ? `\n\n*Showing the first ${displayedTrades.length} matches.*`
+    : "";
+
+  return new EmbedBuilder()
+    .setColor(Number.parseInt(category.accent.slice(1), 16))
+    .setTitle("Potential Trade Matches")
+    .setDescription(
+      `These open offers include one or more cards you want. Check their trade details before contacting the trader.\n\n${links.join("\n")}${overflowNotice}`
+    )
+    .setFooter({ text: `${matchingTrades.length} matching offer${matchingTrades.length === 1 ? "" : "s"} found` });
 }
 
 function normalizeClanTag(value: string): string | undefined {

@@ -116,7 +116,7 @@ export function closeTrade(id: string): boolean {
 export function findOpenTradesOffering(guildId: string, ownerId: string, requestedCardIds: readonly string[]): Trade[] {
   const requestedCards = new Set(requestedCardIds);
   const rows = database
-    .prepare("SELECT * FROM trades WHERE guild_id = ? AND owner_id != ? AND status = 'open'")
+    .prepare("SELECT * FROM trades WHERE guild_id = ? AND owner_id != ? AND status = 'open' ORDER BY created_at DESC")
     .all(guildId, ownerId) as TradeRow[];
 
   return rows
