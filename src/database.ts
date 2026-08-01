@@ -42,22 +42,26 @@ export interface Trade {
   id: string;
   messageId: string;
   channelId: string;
+  guildId: string | null;
   ownerId: string;
   cardType: CardType;
   sending: string[];
   requesting: string[];
   status: "open" | "closed";
+  closedAt: string | null;
 }
 
 interface TradeRow {
   id: string;
   message_id: string;
   channel_id: string;
+  guild_id: string | null;
   owner_id: string;
   card_type: CardType;
   sending_json: string;
   requesting_json: string;
   status: "open" | "closed";
+  closed_at: string | null;
 }
 
 export function createTrade(trade: Trade): void {
@@ -72,7 +76,7 @@ export function createTrade(trade: Trade): void {
       trade.id,
       trade.messageId,
       trade.channelId,
-      null,
+      trade.guildId,
       trade.ownerId,
       trade.cardType,
       JSON.stringify(trade.sending),
@@ -91,11 +95,13 @@ export function getTrade(id: string): Trade | undefined {
     id: row.id,
     messageId: row.message_id,
     channelId: row.channel_id,
+    guildId: row.guild_id,
     ownerId: row.owner_id,
     cardType: row.card_type,
     sending: JSON.parse(row.sending_json) as string[],
     requesting: JSON.parse(row.requesting_json) as string[],
-    status: row.status
+    status: row.status,
+    closedAt: row.closed_at
   };
 }
 
@@ -105,6 +111,28 @@ export function closeTrade(id: string): boolean {
       .prepare("UPDATE trades SET status = 'closed', closed_at = ? WHERE id = ? AND status = 'open'")
       .run(new Date().toISOString(), id).changes === 1
   );
+}
+
+export function findOpenTradesOffering(guildId: string, ownerId: string, requestedCardIds: readonly string[]): Trade[] {
+  const requestedCards = new Set(requestedCardIds);
+  const rows = database
+    .prepare("SELECT * FROM trades WHERE guild_id = ? AND owner_id != ? AND status = 'open'")
+    .all(guildId, ownerId) as TradeRow[];
+
+  return rows
+    .map((row) => ({
+      id: row.id,
+      messageId: row.message_id,
+      channelId: row.channel_id,
+      guildId: row.guild_id,
+      ownerId: row.owner_id,
+      cardType: row.card_type,
+      sending: JSON.parse(row.sending_json) as string[],
+      requesting: JSON.parse(row.requesting_json) as string[],
+      status: row.status,
+      closedAt: row.closed_at
+    }))
+    .filter((trade) => trade.sending.some((cardId) => requestedCards.has(cardId)));
 }
 
 export function saveClanTag(ownerId: string, clanTag: string): void {

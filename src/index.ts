@@ -16,6 +16,7 @@ import {
   clearTradeCooldown,
   closeTrade,
   createTrade,
+  findOpenTradesOffering,
   getClanTag,
   getTrade,
   releaseTradeSlot,
@@ -32,6 +33,7 @@ if (!token) {
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const drafts = new Map<string, TradeDraft>();
 const TRADE_COOLDOWN_MS = 2 * 60 * 1_000;
+const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
@@ -199,12 +201,24 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       id: draft.id,
       messageId: message.id,
       channelId: message.channelId,
+      guildId: interaction.guildId,
       ownerId: interaction.user.id,
       cardType: draft.cardType,
       sending: draft.sending,
       requesting: draft.requesting,
-      status: "open"
+      status: "open",
+      closedAt: null
     });
+    if (interaction.guildId) {
+      const matchingTrades = findOpenTradesOffering(interaction.guildId, interaction.user.id, draft.requesting);
+      for (const matchingTrade of matchingTrades) {
+        const link = `https://discord.com/channels/${interaction.guildId}/${matchingTrade.channelId}/${matchingTrade.messageId}`;
+        await interaction.channel.send({
+          content: `<@${interaction.user.id}> This post is offering one or more of the cards you're trying to request: ${link}`,
+          allowedMentions: { users: [interaction.user.id] }
+        });
+      }
+    }
     published = true;
   } finally {
     if (!published) {
@@ -240,6 +254,11 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
     embeds: [buildTradeEmbed(trade.ownerId, trade.cardType, sending, requesting, true)],
     components: []
   });
+  setTimeout(() => {
+    void interaction.message.delete().catch((error: unknown) => {
+      console.error(`Could not delete closed trade ${trade.id}:`, error);
+    });
+  }, CLOSED_TRADE_DELETE_DELAY_MS);
 }
 
 function getOwnedDraft(ownerId: string, draftId: string): TradeDraft | undefined {
