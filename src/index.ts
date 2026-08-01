@@ -18,7 +18,7 @@ import {
   closeTrade,
   createTrade,
   deleteTradeMatchNotification,
-  findOpenTradesOffering,
+  findCompatibleOpenTrades,
   getClanTag,
   getTrade,
   getTradeMatchNotification,
@@ -236,7 +236,12 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     });
     published = true;
     if (interaction.guildId) {
-      const matchingTrades = findOpenTradesOffering(interaction.guildId, interaction.user.id, requestedCardIds);
+      const matchingTrades = findCompatibleOpenTrades(
+        interaction.guildId,
+        interaction.user.id,
+        requestedCardIds,
+        draft.sending
+      );
       if (matchingTrades.length) {
         const matchMessage = await interaction.channel.send({
           content: `<@${interaction.user.id}>`,
@@ -309,7 +314,7 @@ function getRequestedCardIds(draft: TradeDraft): string[] {
     .filter((cardId) => !draft.sending.includes(cardId));
 }
 
-function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrades: ReturnType<typeof findOpenTradesOffering>): EmbedBuilder {
+function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrades: ReturnType<typeof findCompatibleOpenTrades>): EmbedBuilder {
   const category = CARD_CATALOG[cardType];
   const displayedTrades = matchingTrades.slice(0, MAX_MATCH_LINKS);
   const links = displayedTrades.map((trade, index) => {
@@ -324,7 +329,7 @@ function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrade
     .setColor(Number.parseInt(category.accent.slice(1), 16))
     .setTitle("Potential Trade Matches")
     .setDescription(
-      `These open offers include one or more cards you want. Check their trade details before contacting the trader.\n\n${links.join("\n")}${overflowNotice}`
+      `These open offers have cards you want and request cards you are offering. Check their trade details before contacting the trader.\n\n${links.join("\n")}${overflowNotice}`
     )
     .setFooter({ text: `${matchingTrades.length} matching offer${matchingTrades.length === 1 ? "" : "s"} found` });
 }

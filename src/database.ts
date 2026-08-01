@@ -119,13 +119,19 @@ export function closeTrade(id: string): boolean {
   );
 }
 
-export function findOpenTradesOffering(guildId: string, ownerId: string, requestedCardIds: readonly string[]): Trade[] {
+export function findCompatibleOpenTrades(
+  guildId: string,
+  ownerId: string,
+  requestedCardIds: readonly string[],
+  offeredCardIds: readonly string[]
+): Trade[] {
   const requestedCards = new Set(requestedCardIds);
+  const offeredCards = new Set(offeredCardIds);
   const rows = database
     .prepare("SELECT * FROM trades WHERE guild_id = ? AND owner_id != ? AND status = 'open' ORDER BY created_at DESC")
     .all(guildId, ownerId) as TradeRow[];
 
-  return rows
+  const matchingTrades = rows
     .map((row) => ({
       id: row.id,
       messageId: row.message_id,
@@ -138,7 +144,20 @@ export function findOpenTradesOffering(guildId: string, ownerId: string, request
       status: row.status,
       closedAt: row.closed_at
     }))
-    .filter((trade) => trade.sending.some((cardId) => requestedCards.has(cardId)));
+    .filter(
+      (trade) =>
+        trade.sending.some((cardId) => requestedCards.has(cardId)) &&
+        trade.requesting.some((cardId) => offeredCards.has(cardId))
+    );
+
+  const seenOwners = new Set<string>();
+  return matchingTrades.filter((trade) => {
+    if (seenOwners.has(trade.ownerId)) {
+      return false;
+    }
+    seenOwners.add(trade.ownerId);
+    return true;
+  });
 }
 
 export function saveClanTag(ownerId: string, clanTag: string): void {
