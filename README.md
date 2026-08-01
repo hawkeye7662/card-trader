@@ -4,6 +4,13 @@ A Discord.js bot for posting Clash card trade offers. Members run `/trade elixir
 
 Run `/clan-link tag:#YOURTAG` to save a clan for future offers. Those offers include a **Join Clan** link button pointing to the official Clash clan profile.
 
+## Trade limits
+
+- Up to 3 open trades per player.
+- Up to 3 total posts per player in any rolling 30-minute period.
+- An identical offer cannot be posted again for 30 minutes, including after it is closed.
+- Closing a trade starts a 5-minute cooldown before that player can post again.
+
 ## Setup
 
 1. Install Node.js 22 or newer, then run `npm install`.

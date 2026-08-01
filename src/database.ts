@@ -42,7 +42,25 @@ database.exec(`
     message_id TEXT NOT NULL,
     channel_id TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS bot_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS trades_owner_status_created_at
+    ON trades (owner_id, status, created_at DESC);
+
+  CREATE INDEX IF NOT EXISTS trades_owner_created_at
+    ON trades (owner_id, created_at DESC);
 `);
+
+const cooldownPolicyMigration = database
+  .prepare("INSERT OR IGNORE INTO bot_metadata (key, value) VALUES (?, ?)")
+  .run("close-cooldown-policy-v1", new Date().toISOString());
+if (cooldownPolicyMigration.changes === 1) {
+  database.prepare("DELETE FROM trade_cooldowns").run();
+}
 
 export interface Trade {
   id: string;
@@ -93,22 +111,7 @@ export function createTrade(trade: Trade): void {
 
 export function getTrade(id: string): Trade | undefined {
   const row = database.prepare("SELECT * FROM trades WHERE id = ?").get(id) as TradeRow | undefined;
-  if (!row) {
-    return undefined;
-  }
-
-  return {
-    id: row.id,
-    messageId: row.message_id,
-    channelId: row.channel_id,
-    guildId: row.guild_id,
-    ownerId: row.owner_id,
-    cardType: row.card_type,
-    sending: JSON.parse(row.sending_json) as string[],
-    requesting: JSON.parse(row.requesting_json) as string[],
-    status: row.status,
-    closedAt: row.closed_at
-  };
+  return row ? toTrade(row) : undefined;
 }
 
 export function closeTrade(id: string): boolean {
@@ -116,6 +119,69 @@ export function closeTrade(id: string): boolean {
     database
       .prepare("UPDATE trades SET status = 'closed', closed_at = ? WHERE id = ? AND status = 'open'")
       .run(new Date().toISOString(), id).changes === 1
+  );
+}
+
+export function closeExcessOpenTrades(ownerId: string, maximumOpenTrades: number): Trade[] {
+  return database.transaction(() => {
+    const rows = database
+      .prepare("SELECT * FROM trades WHERE owner_id = ? AND status = 'open' ORDER BY created_at DESC")
+      .all(ownerId) as TradeRow[];
+    const excessRows = rows.slice(maximumOpenTrades);
+    if (!excessRows.length) {
+      return [];
+    }
+
+    const closedAt = new Date().toISOString();
+    const close = database.prepare("UPDATE trades SET status = 'closed', closed_at = ? WHERE id = ?");
+    for (const row of excessRows) {
+      close.run(closedAt, row.id);
+    }
+
+    return excessRows.map((row) => toTrade({ ...row, status: "closed", closed_at: closedAt }));
+  })();
+}
+
+export function closeAllExcessOpenTrades(maximumOpenTrades: number): Trade[] {
+  const owners = database
+    .prepare("SELECT owner_id FROM trades WHERE status = 'open' GROUP BY owner_id HAVING COUNT(*) > ?")
+    .all(maximumOpenTrades) as { owner_id: string }[];
+  return owners.flatMap((owner) => closeExcessOpenTrades(owner.owner_id, maximumOpenTrades));
+}
+
+export function countOpenTrades(ownerId: string): number {
+  const row = database
+    .prepare("SELECT COUNT(*) AS count FROM trades WHERE owner_id = ? AND status = 'open'")
+    .get(ownerId) as { count: number };
+  return row.count;
+}
+
+export function countRecentTrades(ownerId: string, windowMs: number): number {
+  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const row = database
+    .prepare("SELECT COUNT(*) AS count FROM trades WHERE owner_id = ? AND created_at >= ?")
+    .get(ownerId, cutoff) as { count: number };
+  return row.count;
+}
+
+export function hasRecentIdenticalTrade(
+  ownerId: string,
+  cardType: CardType,
+  sending: readonly string[],
+  requesting: readonly string[],
+  windowMs: number
+): boolean {
+  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const rows = database
+    .prepare("SELECT sending_json, requesting_json FROM trades WHERE owner_id = ? AND card_type = ? AND created_at >= ?")
+    .all(ownerId, cardType, cutoff) as { sending_json: string; requesting_json: string }[];
+  const normalizedSending = normalizeCardIds(sending);
+  const normalizedRequesting = normalizeCardIds(requesting);
+
+  return rows.some(
+    (row) =>
+      normalizeCardIds(JSON.parse(row.sending_json) as string[]) === normalizedSending &&
+      normalizeCardIds(JSON.parse(row.requesting_json) as string[]) === normalizedRequesting
   );
 }
 
@@ -132,18 +198,7 @@ export function findCompatibleOpenTrades(
     .all(guildId, ownerId) as TradeRow[];
 
   const matchingTrades = rows
-    .map((row) => ({
-      id: row.id,
-      messageId: row.message_id,
-      channelId: row.channel_id,
-      guildId: row.guild_id,
-      ownerId: row.owner_id,
-      cardType: row.card_type,
-      sending: JSON.parse(row.sending_json) as string[],
-      requesting: JSON.parse(row.requesting_json) as string[],
-      status: row.status,
-      closedAt: row.closed_at
-    }))
+    .map(toTrade)
     .filter(
       (trade) =>
         trade.sending.some((cardId) => requestedCards.has(cardId)) &&
@@ -179,41 +234,21 @@ export function getClanTag(ownerId: string): string | undefined {
   return row?.clan_tag;
 }
 
-export interface TradeSlotClaim {
-  granted: boolean;
-  cooldownUntil: number;
+export function getTradeCooldown(ownerId: string): number | undefined {
+  const row = database
+    .prepare("SELECT cooldown_until FROM trade_cooldowns WHERE owner_id = ?")
+    .get(ownerId) as { cooldown_until: number } | undefined;
+  return row && row.cooldown_until > Date.now() ? row.cooldown_until : undefined;
 }
 
-export function claimTradeSlot(ownerId: string, cooldownMs: number): TradeSlotClaim {
-  const now = Date.now();
-  const cooldownUntil = now + cooldownMs;
-  const result = database
+export function setTradeCooldown(ownerId: string, cooldownMs: number): void {
+  database
     .prepare(`
       INSERT INTO trade_cooldowns (owner_id, cooldown_until)
       VALUES (?, ?)
       ON CONFLICT(owner_id) DO UPDATE SET cooldown_until = excluded.cooldown_until
-      WHERE trade_cooldowns.cooldown_until <= ?
     `)
-    .run(ownerId, cooldownUntil, now);
-
-  if (result.changes === 1) {
-    return { granted: true, cooldownUntil };
-  }
-
-  const row = database
-    .prepare("SELECT cooldown_until FROM trade_cooldowns WHERE owner_id = ?")
-    .get(ownerId) as { cooldown_until: number };
-  return { granted: false, cooldownUntil: row.cooldown_until };
-}
-
-export function releaseTradeSlot(ownerId: string, cooldownUntil: number): void {
-  database
-    .prepare("DELETE FROM trade_cooldowns WHERE owner_id = ? AND cooldown_until = ?")
-    .run(ownerId, cooldownUntil);
-}
-
-export function clearTradeCooldown(ownerId: string): void {
-  database.prepare("DELETE FROM trade_cooldowns WHERE owner_id = ?").run(ownerId);
+    .run(ownerId, Date.now() + cooldownMs);
 }
 
 export interface TradeMatchNotification {
@@ -237,4 +272,23 @@ export function getTradeMatchNotification(tradeId: string): TradeMatchNotificati
 
 export function deleteTradeMatchNotification(tradeId: string): void {
   database.prepare("DELETE FROM trade_match_notifications WHERE trade_id = ?").run(tradeId);
+}
+
+function toTrade(row: TradeRow): Trade {
+  return {
+    id: row.id,
+    messageId: row.message_id,
+    channelId: row.channel_id,
+    guildId: row.guild_id,
+    ownerId: row.owner_id,
+    cardType: row.card_type,
+    sending: JSON.parse(row.sending_json) as string[],
+    requesting: JSON.parse(row.requesting_json) as string[],
+    status: row.status,
+    closedAt: row.closed_at
+  };
+}
+
+function normalizeCardIds(cardIds: readonly string[]): string {
+  return [...cardIds].sort().join(",");
 }

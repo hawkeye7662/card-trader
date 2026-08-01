@@ -67,7 +67,14 @@ export function buildDraftEmbed(draft: TradeDraft): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(toColor(category.accent))
     .setTitle(`Create ${category.label} Trade`)
-    .setDescription("Choose up to nine cards per side, or request every card you are not offering.")
+    .setDescription(
+      "Choose up to nine cards per side, or request every card you are not offering.\n\n" +
+      "**Posting limits**\n" +
+      "• Maximum 3 open trades\n" +
+      "• Maximum 3 posts every 30 minutes\n" +
+      "• Identical trades can be reposted after 30 minutes\n" +
+      "• Closing a trade starts a 5-minute posting cooldown"
+    )
     .addFields(
       { name: "Offering", value: draft.sending.length ? formatCards(draft.cardType, draft.sending) : "Nothing selected", inline: true },
       {

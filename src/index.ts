@@ -13,18 +13,23 @@ import {
 } from "discord.js";
 import { CARD_CATALOG, findCards, isCardType, type CardType } from "./cards.js";
 import {
-  claimTradeSlot,
-  clearTradeCooldown,
+  closeAllExcessOpenTrades,
+  closeExcessOpenTrades,
   closeTrade,
+  countOpenTrades,
+  countRecentTrades,
   createTrade,
   deleteTradeMatchNotification,
   findCompatibleOpenTrades,
   getClanTag,
   getTrade,
+  getTradeCooldown,
   getTradeMatchNotification,
-  releaseTradeSlot,
+  hasRecentIdenticalTrade,
   saveClanTag,
-  saveTradeMatchNotification
+  saveTradeMatchNotification,
+  setTradeCooldown,
+  type Trade
 } from "./database.js";
 import { renderTrade } from "./renderer.js";
 import {
@@ -43,12 +48,21 @@ if (!token) {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const drafts = new Map<string, TradeDraft>();
-const TRADE_COOLDOWN_MS = 2 * 60 * 1_000;
+const publishingUsers = new Set<string>();
+const MAX_OPEN_TRADES = 3;
+const MAX_POSTS_PER_WINDOW = 3;
+const POST_WINDOW_MS = 30 * 60 * 1_000;
+const CLOSED_TRADE_COOLDOWN_MS = 5 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 const MAX_MATCH_LINKS = 6;
 
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
+  const excessTrades = closeAllExcessOpenTrades(MAX_OPEN_TRADES);
+  for (const trade of excessTrades) {
+    setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
+    await closeTradePost(trade);
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -201,18 +215,53 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     return;
   }
 
-  const slot = claimTradeSlot(interaction.user.id, TRADE_COOLDOWN_MS);
-  if (!slot.granted) {
-    const remainingSeconds = Math.ceil((slot.cooldownUntil - Date.now()) / 1_000);
+  if (publishingUsers.has(interaction.user.id)) {
     await interaction.reply({
-      content: `You can publish another trade in ${formatDuration(remainingSeconds)}.`,
+      content: "Your other trade is still being published.",
       flags: MessageFlags.Ephemeral
     });
     return;
   }
 
-  let published = false;
+  publishingUsers.add(interaction.user.id);
   try {
+    const excessTrades = closeExcessOpenTrades(interaction.user.id, MAX_OPEN_TRADES);
+    for (const trade of excessTrades) {
+      setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
+      await closeTradePost(trade);
+    }
+
+    const cooldownUntil = getTradeCooldown(interaction.user.id);
+    if (cooldownUntil) {
+      const remainingSeconds = Math.ceil((cooldownUntil - Date.now()) / 1_000);
+      await interaction.reply({
+        content: `After closing a trade, you can publish another one in ${formatDuration(remainingSeconds)}.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+    if (countOpenTrades(interaction.user.id) >= MAX_OPEN_TRADES) {
+      await interaction.reply({
+        content: `You already have ${MAX_OPEN_TRADES} open trades. Close one before posting another.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+    if (countRecentTrades(interaction.user.id, POST_WINDOW_MS) >= MAX_POSTS_PER_WINDOW) {
+      await interaction.reply({
+        content: `You can post at most ${MAX_POSTS_PER_WINDOW} trades every 30 minutes.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+    if (hasRecentIdenticalTrade(interaction.user.id, draft.cardType, draft.sending, requestedCardIds, POST_WINDOW_MS)) {
+      await interaction.reply({
+        content: "You already posted this exact trade in the last 30 minutes.",
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     const useAllCardsTile = draft.requestAllOther && requesting.length >= MAX_CARDS_PER_SIDE;
     const attachment = await renderTrade(draft.cardType, sending, requesting, useAllCardsTile);
     const clanTag = getClanTag(interaction.user.id);
@@ -234,7 +283,7 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       status: "open",
       closedAt: null
     });
-    published = true;
+    drafts.delete(draft.id);
     if (interaction.guildId) {
       const matchingTrades = findCompatibleOpenTrades(
         interaction.guildId,
@@ -251,14 +300,10 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
         saveTradeMatchNotification(draft.id, matchMessage.id, matchMessage.channelId);
       }
     }
+    await interaction.update({ content: "Your trade offer has been posted.", embeds: [], components: [] });
   } finally {
-    if (!published) {
-      releaseTradeSlot(interaction.user.id, slot.cooldownUntil);
-    }
+    publishingUsers.delete(interaction.user.id);
   }
-
-  drafts.delete(draft.id);
-  await interaction.update({ content: "Your trade offer has been posted.", embeds: [], components: [] });
 }
 
 async function handleCloseButton(interaction: ButtonInteraction, tradeId: string): Promise<void> {
@@ -278,24 +323,52 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
     await interaction.reply({ content: "This trade was just closed.", flags: MessageFlags.Ephemeral });
     return;
   }
-  clearTradeCooldown(trade.ownerId);
-  const matchNotification = getTradeMatchNotification(tradeId);
-  if (matchNotification) {
-    const channel = await client.channels.fetch(matchNotification.channelId);
-    if (channel?.isTextBased()) {
-      await channel.messages.delete(matchNotification.messageId);
-    }
-    deleteTradeMatchNotification(tradeId);
-  }
+  setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
+  await deleteTradeMatchAlert(tradeId);
 
   await interaction.update({
     content: "",
     embeds: [buildTradeEmbed(trade.ownerId, trade.cardType, sending, requesting, false, true)],
     components: []
   });
+  scheduleClosedTradeDeletion(interaction.message, trade.id);
+}
+
+async function closeTradePost(trade: Trade): Promise<void> {
+  await deleteTradeMatchAlert(trade.id);
+  const channel = await client.channels.fetch(trade.channelId);
+  if (!channel?.isTextBased()) {
+    return;
+  }
+
+  const message = await channel.messages.fetch(trade.messageId);
+  const sending = findCards(trade.cardType, trade.sending);
+  const requesting = findCards(trade.cardType, trade.requesting);
+  await message.edit({
+    content: "",
+    embeds: [buildTradeEmbed(trade.ownerId, trade.cardType, sending, requesting, false, true)],
+    components: []
+  });
+  scheduleClosedTradeDeletion(message, trade.id);
+}
+
+async function deleteTradeMatchAlert(tradeId: string): Promise<void> {
+  const matchNotification = getTradeMatchNotification(tradeId);
+  if (!matchNotification) {
+    return;
+  }
+
+  const channel = await client.channels.fetch(matchNotification.channelId);
+  if (channel?.isTextBased()) {
+    await channel.messages.delete(matchNotification.messageId);
+  }
+  deleteTradeMatchNotification(tradeId);
+}
+
+function scheduleClosedTradeDeletion(message: ButtonInteraction["message"], tradeId: string): void {
   setTimeout(() => {
-    void interaction.message.delete().catch((error: unknown) => {
-      console.error(`Could not delete closed trade ${trade.id}:`, error);
+    void message.delete().catch((error: unknown) => {
+      console.error(`Could not delete closed trade ${tradeId}:`, error);
     });
   }, CLOSED_TRADE_DELETE_DELAY_MS);
 }
