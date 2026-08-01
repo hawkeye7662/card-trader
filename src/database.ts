@@ -36,6 +36,12 @@ database.exec(`
     owner_id TEXT PRIMARY KEY,
     cooldown_until INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS trade_match_notifications (
+    trade_id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL
+  );
 `);
 
 export interface Trade {
@@ -189,4 +195,27 @@ export function releaseTradeSlot(ownerId: string, cooldownUntil: number): void {
 
 export function clearTradeCooldown(ownerId: string): void {
   database.prepare("DELETE FROM trade_cooldowns WHERE owner_id = ?").run(ownerId);
+}
+
+export interface TradeMatchNotification {
+  messageId: string;
+  channelId: string;
+}
+
+export function saveTradeMatchNotification(tradeId: string, messageId: string, channelId: string): void {
+  database
+    .prepare("INSERT OR REPLACE INTO trade_match_notifications (trade_id, message_id, channel_id) VALUES (?, ?, ?)")
+    .run(tradeId, messageId, channelId);
+}
+
+export function getTradeMatchNotification(tradeId: string): TradeMatchNotification | undefined {
+  const row = database
+    .prepare("SELECT message_id, channel_id FROM trade_match_notifications WHERE trade_id = ?")
+    .get(tradeId) as { message_id: string; channel_id: string } | undefined;
+
+  return row ? { messageId: row.message_id, channelId: row.channel_id } : undefined;
+}
+
+export function deleteTradeMatchNotification(tradeId: string): void {
+  database.prepare("DELETE FROM trade_match_notifications WHERE trade_id = ?").run(tradeId);
 }

@@ -17,11 +17,14 @@ import {
   clearTradeCooldown,
   closeTrade,
   createTrade,
+  deleteTradeMatchNotification,
   findOpenTradesOffering,
   getClanTag,
   getTrade,
+  getTradeMatchNotification,
   releaseTradeSlot,
-  saveClanTag
+  saveClanTag,
+  saveTradeMatchNotification
 } from "./database.js";
 import { renderTrade } from "./renderer.js";
 import {
@@ -235,11 +238,12 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     if (interaction.guildId) {
       const matchingTrades = findOpenTradesOffering(interaction.guildId, interaction.user.id, requestedCardIds);
       if (matchingTrades.length) {
-        await interaction.channel.send({
+        const matchMessage = await interaction.channel.send({
           content: `<@${interaction.user.id}>`,
           embeds: [buildTradeMatchEmbed(draft.cardType, interaction.guildId, matchingTrades)],
           allowedMentions: { users: [interaction.user.id] }
         });
+        saveTradeMatchNotification(draft.id, matchMessage.id, matchMessage.channelId);
       }
     }
   } finally {
@@ -270,6 +274,14 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
     return;
   }
   clearTradeCooldown(trade.ownerId);
+  const matchNotification = getTradeMatchNotification(tradeId);
+  if (matchNotification) {
+    const channel = await client.channels.fetch(matchNotification.channelId);
+    if (channel?.isTextBased()) {
+      await channel.messages.delete(matchNotification.messageId);
+    }
+    deleteTradeMatchNotification(tradeId);
+  }
 
   await interaction.update({
     content: "",
