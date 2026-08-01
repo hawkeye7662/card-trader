@@ -87,6 +87,7 @@ export function buildTradeEmbed(
     .setTitle(category.label)
     .setDescription(closed ? `This offer from <@${ownerId}> is no longer available.` : `Posted by <@${ownerId}>`)
     .addFields(fields)
+    .setFooter({ text: "Use /trade to post offers • Use /clan-link to save your clan tag" })
     .setImage("attachment://trade.png");
 }
 
