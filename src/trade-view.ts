@@ -76,19 +76,23 @@ export function buildTradeEmbed(
   closed = false
 ): EmbedBuilder {
   const category = CARD_CATALOG[type];
-  const fields: APIEmbedField[] = [
-    { name: "Offering", value: sending.map((card) => `• ${card.name}`).join("\n"), inline: true },
-    { name: "Requesting", value: requesting.map((card) => `• ${card.name}`).join("\n"), inline: true }
-  ];
-
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(toColor(closed ? "#6b7280" : category.accent))
     .setAuthor({ name: closed ? "Trade Closed" : "Trade Offer" })
     .setTitle(category.label)
     .setDescription(closed ? `This offer from <@${ownerId}> is no longer available.` : `Posted by <@${ownerId}>`)
-    .addFields(fields)
     .setFooter({ text: "Use /trade to post offers • Use /clan-link to save your clan tag" })
     .setImage("attachment://trade.png");
+
+  if (!closed) {
+    const fields: APIEmbedField[] = [
+      { name: "Offering", value: sending.map((card) => `• ${card.name}`).join("\n"), inline: true },
+      { name: "Requesting", value: requesting.map((card) => `• ${card.name}`).join("\n"), inline: true }
+    ];
+    embed.addFields(fields);
+  }
+
+  return embed;
 }
 
 export function buildTradeButtons(tradeId: string, clanLink?: string): ActionRowBuilder<ButtonBuilder> {
