@@ -8,7 +8,7 @@ import {
 } from "discord.js";
 import { CARD_CATALOG, type Card, type CardType } from "./cards.js";
 
-const MAX_CARDS_PER_SIDE = 3;
+const MAX_CARDS_PER_SIDE = 9;
 
 export interface TradeDraft {
   id: string;
@@ -16,6 +16,7 @@ export interface TradeDraft {
   cardType: CardType;
   sending: string[];
   requesting: string[];
+  requestAllOther: boolean;
 }
 
 export function buildDraftComponents(draft: TradeDraft): ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] {
@@ -44,13 +45,18 @@ export function buildDraftComponents(draft: TradeDraft): ActionRowBuilder<String
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(`draft:${draft.id}:requesting`)
-        .setPlaceholder("Select cards you want")
+        .setPlaceholder(draft.requestAllOther ? "Requesting every card not offered" : "Select cards you want")
         .setMinValues(1)
         .setMaxValues(maxCards)
+        .setDisabled(draft.requestAllOther)
         .addOptions(requestedOptions)
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`draft:${draft.id}:submit`).setLabel("Publish trade").setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`draft:${draft.id}:all-other`)
+        .setLabel(draft.requestAllOther ? "Choose specific cards" : "Want all other cards")
+        .setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`draft:${draft.id}:cancel`).setLabel("Cancel").setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -61,10 +67,18 @@ export function buildDraftEmbed(draft: TradeDraft): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(toColor(category.accent))
     .setTitle(`Create ${category.label} Trade`)
-    .setDescription("Choose one to three cards in each menu. A card cannot be both offered and requested.")
+    .setDescription("Choose up to nine cards per side, or request every card you are not offering.")
     .addFields(
       { name: "Offering", value: draft.sending.length ? formatCards(draft.cardType, draft.sending) : "Nothing selected", inline: true },
-      { name: "Requesting", value: draft.requesting.length ? formatCards(draft.cardType, draft.requesting) : "Nothing selected", inline: true }
+      {
+        name: "Want Any of",
+        value: draft.requestAllOther
+          ? `Every ${category.label.slice(0, -1).toLowerCase()} not offered`
+          : draft.requesting.length
+            ? formatCards(draft.cardType, draft.requesting)
+            : "Nothing selected",
+        inline: true
+      }
     );
 }
 
@@ -73,6 +87,7 @@ export function buildTradeEmbed(
   type: CardType,
   sending: readonly Card[],
   requesting: readonly Card[],
+  requestAllOther = false,
   closed = false
 ): EmbedBuilder {
   const category = CARD_CATALOG[type];
@@ -87,7 +102,13 @@ export function buildTradeEmbed(
   if (!closed) {
     const fields: APIEmbedField[] = [
       { name: "Offering", value: sending.map((card) => `• ${card.name}`).join("\n"), inline: true },
-      { name: "Requesting", value: requesting.map((card) => `• ${card.name}`).join("\n"), inline: true }
+      {
+        name: "Want Any of",
+        value: requestAllOther && requesting.length >= MAX_CARDS_PER_SIDE
+          ? `Every ${category.label.slice(0, -1).toLowerCase()} not offered`
+          : requesting.map((card) => `• ${card.name}`).join("\n"),
+        inline: true
+      }
     ];
     embed.addFields(fields);
   }

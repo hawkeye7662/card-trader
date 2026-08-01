@@ -16,6 +16,7 @@ export interface Card {
 export interface CardCategory {
   label: string
   accent: string
+  allCardsImagePath: string
   cards: readonly Card[]
 }
 
@@ -23,6 +24,7 @@ export const CARD_CATALOG: Record<CardType, CardCategory> = {
   elixir: {
     label: 'Elixir Cards',
     accent: '#be57eb',
+    allCardsImagePath: 'assets/cards/elixir/all.webp',
     cards: [
       { id: 'elixir-barbarian', name: 'Barbarian', imagePath: 'assets/cards/elixir/00-barbarian.webp' },
       { id: 'elixir-archer', name: 'Archer', imagePath: 'assets/cards/elixir/01-archer.webp' },
@@ -48,6 +50,7 @@ export const CARD_CATALOG: Record<CardType, CardCategory> = {
   'dark-elixir': {
     label: 'Dark Elixir Cards',
     accent: '#734a9e',
+    allCardsImagePath: 'assets/cards/darkElixir/all.webp',
     cards: [
       { id: 'dark-elixir-minion', name: 'Minion', imagePath: 'assets/cards/darkElixir/00-minion.webp' },
       { id: 'dark-elixir-hog-rider', name: 'Hog Rider', imagePath: 'assets/cards/darkElixir/01-hogRider.webp' },
@@ -67,6 +70,7 @@ export const CARD_CATALOG: Record<CardType, CardCategory> = {
   'builder-base': {
     label: 'Builder Base Cards',
     accent: '#e49638',
+    allCardsImagePath: 'assets/cards/builderBase/all.webp',
     cards: [
       { id: 'builder-base-raged-barbarian', name: 'Raged Barbarian', imagePath: 'assets/cards/builderBase/00-ragedBarbarian.webp' },
       { id: 'builder-base-sneaky-archer', name: 'Sneaky Archer', imagePath: 'assets/cards/builderBase/01-sneakyArcher.webp' },
@@ -84,6 +88,7 @@ export const CARD_CATALOG: Record<CardType, CardCategory> = {
   'super-troop': {
     label: 'Super Troop Cards',
     accent: '#e83b57',
+    allCardsImagePath: 'assets/cards/superTroops/all.webp',
     cards: [
       { id: 'super-troop-super-barbarian', name: 'Super Barbarian', imagePath: 'assets/cards/superTroops/00-superBarbarian.webp' },
       { id: 'super-troop-sneaky-archer', name: 'Sneaky Archer', imagePath: 'assets/cards/superTroops/01-sneakyArcher.webp' },

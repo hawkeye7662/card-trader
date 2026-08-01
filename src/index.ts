@@ -10,7 +10,7 @@ import {
   type InteractionReplyOptions,
   type StringSelectMenuInteraction
 } from "discord.js";
-import { findCards, isCardType, type CardType } from "./cards.js";
+import { CARD_CATALOG, findCards, isCardType, type CardType } from "./cards.js";
 import {
   claimTradeSlot,
   clearTradeCooldown,
@@ -23,7 +23,14 @@ import {
   saveClanTag
 } from "./database.js";
 import { renderTrade } from "./renderer.js";
-import { buildDraftComponents, buildDraftEmbed, buildTradeButtons, buildTradeEmbed, type TradeDraft } from "./trade-view.js";
+import {
+  buildDraftComponents,
+  buildDraftEmbed,
+  buildTradeButtons,
+  buildTradeEmbed,
+  MAX_CARDS_PER_SIDE,
+  type TradeDraft
+} from "./trade-view.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -84,7 +91,8 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     ownerId: interaction.user.id,
     cardType: type,
     sending: [],
-    requesting: []
+    requesting: [],
+    requestAllOther: false
   };
   drafts.set(draft.id, draft);
 
@@ -108,6 +116,9 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
   }
 
   draft[side] = interaction.values;
+  if (side === "requesting") {
+    draft.requestAllOther = false;
+  }
   await interaction.update({ embeds: [buildDraftEmbed(draft)], components: buildDraftComponents(draft) });
 }
 
@@ -152,22 +163,30 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     return;
   }
 
+  if (operation === "all-other") {
+    draft.requestAllOther = !draft.requestAllOther;
+    draft.requesting = [];
+    await interaction.update({ embeds: [buildDraftEmbed(draft)], components: buildDraftComponents(draft) });
+    return;
+  }
+
   if (operation !== "submit") {
     return;
   }
 
-  if (!draft.sending.length || !draft.requesting.length) {
+  const requestedCardIds = getRequestedCardIds(draft);
+  if (!draft.sending.length || !requestedCardIds.length) {
     await interaction.reply({ content: "Select at least one card on each side first.", flags: MessageFlags.Ephemeral });
     return;
   }
-  if (draft.sending.some((cardId) => draft.requesting.includes(cardId))) {
+  if (draft.sending.some((cardId) => requestedCardIds.includes(cardId))) {
     await interaction.reply({ content: "The same card cannot be both offered and requested.", flags: MessageFlags.Ephemeral });
     return;
   }
 
   const sending = findCards(draft.cardType, draft.sending);
-  const requesting = findCards(draft.cardType, draft.requesting);
-  if (sending.length !== draft.sending.length || requesting.length !== draft.requesting.length) {
+  const requesting = findCards(draft.cardType, requestedCardIds);
+  if (sending.length !== draft.sending.length || requesting.length !== requestedCardIds.length) {
     await interaction.reply({ content: "One or more selected cards are no longer valid.", flags: MessageFlags.Ephemeral });
     return;
   }
@@ -189,11 +208,12 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
 
   let published = false;
   try {
-    const attachment = await renderTrade(draft.cardType, sending, requesting);
+    const useAllCardsTile = draft.requestAllOther && requesting.length >= MAX_CARDS_PER_SIDE;
+    const attachment = await renderTrade(draft.cardType, sending, requesting, useAllCardsTile);
     const clanTag = getClanTag(interaction.user.id);
     const message = await interaction.channel.send({
       content: `<@${interaction.user.id}>`,
-      embeds: [buildTradeEmbed(interaction.user.id, draft.cardType, sending, requesting)],
+      embeds: [buildTradeEmbed(interaction.user.id, draft.cardType, sending, requesting, useAllCardsTile)],
       files: [attachment],
       components: [buildTradeButtons(draft.id, clanTag ? buildClanLink(clanTag) : undefined)]
     });
@@ -205,12 +225,12 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       ownerId: interaction.user.id,
       cardType: draft.cardType,
       sending: draft.sending,
-      requesting: draft.requesting,
+      requesting: requestedCardIds,
       status: "open",
       closedAt: null
     });
     if (interaction.guildId) {
-      const matchingTrades = findOpenTradesOffering(interaction.guildId, interaction.user.id, draft.requesting);
+      const matchingTrades = findOpenTradesOffering(interaction.guildId, interaction.user.id, requestedCardIds);
       for (const matchingTrade of matchingTrades) {
         const link = `https://discord.com/channels/${interaction.guildId}/${matchingTrade.channelId}/${matchingTrade.messageId}`;
         await interaction.channel.send({
@@ -251,7 +271,7 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
 
   await interaction.update({
     content: "",
-    embeds: [buildTradeEmbed(trade.ownerId, trade.cardType, sending, requesting, true)],
+    embeds: [buildTradeEmbed(trade.ownerId, trade.cardType, sending, requesting, false, true)],
     components: []
   });
   setTimeout(() => {
@@ -264,6 +284,15 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
 function getOwnedDraft(ownerId: string, draftId: string): TradeDraft | undefined {
   const draft = drafts.get(draftId);
   return draft?.ownerId === ownerId ? draft : undefined;
+}
+
+function getRequestedCardIds(draft: TradeDraft): string[] {
+  if (!draft.requestAllOther) {
+    return draft.requesting;
+  }
+  return CARD_CATALOG[draft.cardType].cards
+    .map((card) => card.id)
+    .filter((cardId) => !draft.sending.includes(cardId));
 }
 
 function normalizeClanTag(value: string): string | undefined {
