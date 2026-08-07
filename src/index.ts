@@ -22,6 +22,7 @@ import {
   deleteTradeMatchNotification,
   findCompatibleOpenTrades,
   getClanTag,
+  getClosedTrades,
   getTrade,
   getTradeCooldown,
   getTradeMatchNotification,
@@ -55,6 +56,7 @@ const POST_WINDOW_MS = 30 * 60 * 1_000;
 const CLOSED_TRADE_COOLDOWN_MS = 5 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 const MAX_MATCH_LINKS = 6;
+const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
@@ -62,6 +64,13 @@ client.once(Events.ClientReady, async (readyClient) => {
   for (const trade of excessTrades) {
     setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
     await closeTradePost(trade);
+  }
+  for (const trade of getClosedTrades()) {
+    try {
+      await deleteClosedTradePost(trade);
+    } catch (error) {
+      console.error(`Could not delete closed trade ${trade.id}:`, error);
+    }
   }
 });
 
@@ -352,6 +361,22 @@ async function closeTradePost(trade: Trade): Promise<void> {
   scheduleClosedTradeDeletion(message, trade.id);
 }
 
+async function deleteClosedTradePost(trade: Trade): Promise<void> {
+  await deleteTradeMatchAlert(trade.id);
+  try {
+    const channel = await client.channels.fetch(trade.channelId);
+    if (!channel?.isTextBased()) {
+      return;
+    }
+    await channel.messages.delete(trade.messageId);
+  } catch (error) {
+    if (hasDiscordErrorCode(error, UNKNOWN_MESSAGE_ERROR_CODE)) {
+      return;
+    }
+    throw error;
+  }
+}
+
 async function deleteTradeMatchAlert(tradeId: string): Promise<void> {
   const matchNotification = getTradeMatchNotification(tradeId);
   if (!matchNotification) {
@@ -360,7 +385,13 @@ async function deleteTradeMatchAlert(tradeId: string): Promise<void> {
 
   const channel = await client.channels.fetch(matchNotification.channelId);
   if (channel?.isTextBased()) {
-    await channel.messages.delete(matchNotification.messageId);
+    try {
+      await channel.messages.delete(matchNotification.messageId);
+    } catch (error) {
+      if (!hasDiscordErrorCode(error, UNKNOWN_MESSAGE_ERROR_CODE)) {
+        throw error;
+      }
+    }
   }
   deleteTradeMatchNotification(tradeId);
 }
@@ -423,6 +454,10 @@ function formatDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function hasDiscordErrorCode(error: unknown, code: number): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
 client.login(token);

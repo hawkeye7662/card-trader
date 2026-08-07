@@ -149,6 +149,13 @@ export function closeAllExcessOpenTrades(maximumOpenTrades: number): Trade[] {
   return owners.flatMap((owner) => closeExcessOpenTrades(owner.owner_id, maximumOpenTrades));
 }
 
+export function getClosedTrades(): Trade[] {
+  const rows = database
+    .prepare("SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC")
+    .all() as TradeRow[];
+  return rows.map(toTrade);
+}
+
 export function countOpenTrades(ownerId: string): number {
   const row = database
     .prepare("SELECT COUNT(*) AS count FROM trades WHERE owner_id = ? AND status = 'open'")
