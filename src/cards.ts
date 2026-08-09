@@ -91,7 +91,7 @@ export const CARD_CATALOG: Record<CardType, CardCategory> = {
     allCardsImagePath: 'assets/cards/superTroops/all.webp',
     cards: [
       { id: 'super-troop-super-barbarian', name: 'Super Barbarian', imagePath: 'assets/cards/superTroops/00-superBarbarian.webp' },
-      { id: 'super-troop-sneaky-archer', name: 'Sneaky Archer', imagePath: 'assets/cards/superTroops/01-sneakyArcher.webp' },
+      { id: 'super-troop-sneaky-archer', name: 'Super Archer', imagePath: 'assets/cards/superTroops/01-superArcher.webp' },
       { id: 'super-troop-sneaky-goblin', name: 'Sneaky Goblin', imagePath: 'assets/cards/superTroops/02-sneakyGoblin.webp' },
       { id: 'super-troop-super-wall-breaker', name: 'Super Wall Breaker', imagePath: 'assets/cards/superTroops/03-superWallBreaker.webp' },
       { id: 'super-troop-super-giant', name: 'Super Giant', imagePath: 'assets/cards/superTroops/04-superGiant.webp' },
