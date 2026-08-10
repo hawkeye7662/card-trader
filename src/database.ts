@@ -122,6 +122,25 @@ export function closeTrade(id: string): boolean {
   );
 }
 
+export function closeAllOpenTrades(ownerId: string): Trade[] {
+  return database.transaction(() => {
+    const rows = database
+      .prepare("SELECT * FROM trades WHERE owner_id = ? AND status = 'open' ORDER BY created_at DESC")
+      .all(ownerId) as TradeRow[];
+    if (!rows.length) {
+      return [];
+    }
+
+    const closedAt = new Date().toISOString();
+    const close = database.prepare("UPDATE trades SET status = 'closed', closed_at = ? WHERE id = ?");
+    for (const row of rows) {
+      close.run(closedAt, row.id);
+    }
+
+    return rows.map((row) => toTrade({ ...row, status: "closed", closed_at: closedAt }));
+  })();
+}
+
 export function closeExcessOpenTrades(ownerId: string, maximumOpenTrades: number): Trade[] {
   return database.transaction(() => {
     const rows = database

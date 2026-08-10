@@ -9,12 +9,15 @@ if (!token || !clientId) {
   throw new Error("DISCORD_TOKEN and DISCORD_CLIENT_ID must be set in .env.");
 }
 
-const command = new SlashCommandBuilder().setName("trade").setDescription("Create a Clash card trade offer");
+const command = new SlashCommandBuilder().setName("trade").setDescription("Create or close a Clash card trade offer");
 for (const type of CARD_TYPES) {
   command.addSubcommand((subcommand) =>
     subcommand.setName(type).setDescription(`Create a ${CARD_CATALOG[type].label} trade offer`)
   );
 }
+command.addSubcommand((subcommand) =>
+  subcommand.setName("close-all").setDescription("Close all of your open trade offers")
+);
 
 const clanLinkCommand = new SlashCommandBuilder()
   .setName("clan-link")

@@ -13,6 +13,7 @@ import {
 } from "discord.js";
 import { CARD_CATALOG, findCards, isCardType, type CardType } from "./cards.js";
 import {
+  closeAllOpenTrades,
   closeAllExcessOpenTrades,
   closeExcessOpenTrades,
   closeTrade,
@@ -55,7 +56,7 @@ const MAX_POSTS_PER_WINDOW = 3;
 const POST_WINDOW_MS = 30 * 60 * 1_000;
 const CLOSED_TRADE_COOLDOWN_MS = 5 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
-const MAX_MATCH_LINKS = 6;
+const MAX_MATCH_LINKS = 3;
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -109,6 +110,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
   }
 
   const type = interaction.options.getSubcommand();
+  if (type === "close-all") {
+    await handleCloseAllTradesCommand(interaction);
+    return;
+  }
   if (!isCardType(type)) {
     await interaction.reply({ content: "Unknown card type.", flags: MessageFlags.Ephemeral });
     return;
@@ -129,6 +134,26 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     components: buildDraftComponents(draft),
     flags: MessageFlags.Ephemeral
   });
+}
+
+async function handleCloseAllTradesCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const trades = closeAllOpenTrades(interaction.user.id);
+  if (!trades.length) {
+    await interaction.editReply("You do not have any open trades.");
+    return;
+  }
+
+  setTradeCooldown(interaction.user.id, CLOSED_TRADE_COOLDOWN_MS);
+  for (const trade of trades) {
+    try {
+      await closeTradePost(trade);
+    } catch (error) {
+      console.error(`Could not close trade ${trade.id}:`, error);
+    }
+  }
+
+  await interaction.editReply(`Closed your ${trades.length} open trade${trades.length === 1 ? "" : "s"}.`);
 }
 
 async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
@@ -431,11 +456,8 @@ function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrade
 
   return new EmbedBuilder()
     .setColor(Number.parseInt(category.accent.slice(1), 16))
-    .setTitle("Potential Trade Matches")
-    .setDescription(
-      `These open offers have cards you want and request cards you are offering. Check their trade details before contacting the trader.\n\n${links.join("\n")}${overflowNotice}`
-    )
-    .setFooter({ text: `${matchingTrades.length} matching offer${matchingTrades.length === 1 ? "" : "s"} found` });
+    .setTitle(`${matchingTrades.length} Potential Trade Match${matchingTrades.length === 1 ? "" : "es"}`)
+    .setDescription(`${links.join("\n")}${overflowNotice}`);
 }
 
 function normalizeClanTag(value: string): string | undefined {
