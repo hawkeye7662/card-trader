@@ -24,3 +24,13 @@ Run `/clan-link tag:#YOURTAG` to save a clan for future offers. Those offers inc
 Edit `src/cards.ts` to replace the placeholder names and IDs. Put a PNG or WebP file for each card in `assets/cards/` and set that card's `imagePath` (for example, `assets/cards/elixir-archer.png`). Add `all.webp` in each category folder for large “want all other cards” requests. Missing artwork deliberately renders as a polished placeholder tile, so the bot works before assets are ready.
 
 Trade records are stored in `data/trades.sqlite`, allowing Close Trade buttons to survive bot restarts.
+
+## License and attribution
+
+This project is licensed under the GNU General Public License v3.0 only
+(GPL-3.0-only).
+
+Card artwork in `assets/cards/` is sourced from
+[ClashKing Assets](https://github.com/ClashKingInc/ClashKingAssets), licensed
+under GPL-3.0. Credit: ClashKing Inc. The artwork is used unchanged unless
+otherwise noted.
