@@ -9,6 +9,7 @@ import {
   MessageFlags,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
+  type Interaction,
   type InteractionReplyOptions,
   type StringSelectMenuInteraction
 } from "discord.js";
@@ -67,8 +68,14 @@ const MAX_FIND_MATCH_LINKS = 10;
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
 
-client.once(Events.ClientReady, async (readyClient) => {
+client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
+  void cleanUpClosedTrades().catch((error) => {
+    console.error("Closed-trade cleanup failed:", error);
+  });
+});
+
+async function cleanUpClosedTrades(): Promise<void> {
   const excessTrades = closeAllExcessOpenTrades(MAX_OPEN_TRADES);
   for (const trade of excessTrades) {
     await closeTradePost(trade);
@@ -80,9 +87,13 @@ client.once(Events.ClientReady, async (readyClient) => {
       console.error(`Could not delete closed trade ${trade.id}:`, error);
     }
   }
+}
+
+client.on(Events.InteractionCreate, (interaction) => {
+  void handleInteraction(interaction);
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
+async function handleInteraction(interaction: Interaction): Promise<void> {
   try {
     if (interaction.isChatInputCommand()) {
       await handleCommand(interaction);
@@ -93,19 +104,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (error) {
     console.error("Interaction failed:", error);
-    if (interaction.isRepliable()) {
-      const response: InteractionReplyOptions = {
-        content: "Something went wrong while handling that trade. Please try again.",
-        flags: MessageFlags.Ephemeral
-      };
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp(response);
-      } else {
-        await interaction.reply(response);
-      }
-    }
+    await sendInteractionFailure(interaction);
   }
-});
+}
+
+async function sendInteractionFailure(interaction: Interaction): Promise<void> {
+  if (!interaction.isRepliable()) {
+    return;
+  }
+
+  const response: InteractionReplyOptions = {
+    content: "Something went wrong while handling that trade. Please try again.",
+    flags: MessageFlags.Ephemeral
+  };
+  try {
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(response);
+    } else {
+      await interaction.reply(response);
+    }
+  } catch (error) {
+    console.error("Could not send interaction failure response:", error);
+  }
+}
 
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (interaction.commandName === "clan-link") {
