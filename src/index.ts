@@ -1,6 +1,9 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   ChannelType,
   EmbedBuilder,
@@ -13,7 +16,7 @@ import {
   type InteractionReplyOptions,
   type StringSelectMenuInteraction
 } from "discord.js";
-import { CARD_CATALOG, findCards, isCardType, type CardType } from "./cards.js";
+import { CARD_CATALOG, CARD_TYPES, findCards, isCardType, type CardType } from "./cards.js";
 import {
   closeAllOpenTrades,
   closeAllExcessOpenTrades,
@@ -64,7 +67,7 @@ const MAX_POSTS_PER_WINDOW = 3;
 const POST_WINDOW_MS = 30 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 const MAX_MATCH_LINKS = 3;
-const MAX_FIND_MATCH_LINKS = 10;
+const MATCHES_PER_PAGE = 10;
 const MAX_MATCH_EMBED_DESCRIPTION_LENGTH = 3_800;
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
@@ -197,33 +200,113 @@ async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const matchEmojis = await getTradeMatchEmojis(interaction.guildId);
-  const embeds: EmbedBuilder[] = [];
-  for (const trade of getOpenTrades(interaction.user.id)) {
-    const matches = findCompatibleOpenTrades(interaction.guildId, interaction.user.id, trade.requesting, trade.sending);
-    if (!matches.length) {
-      continue;
-    }
-    embeds.push(
-      await buildTradeMatchEmbed(
-        trade.cardType,
-        interaction.guildId,
-        matches,
-        trade.requesting,
-        trade.sending,
-        getTradeThreadId(trade.channelId, trade.cardType),
-        matchEmojis,
-        MAX_FIND_MATCH_LINKS,
-        false
-      )
-    );
-  }
-
-  if (!embeds.length) {
+  const page = await buildFindMatchesPage(interaction.guildId, interaction.user.id, 0);
+  if (!page) {
     await interaction.editReply("No matching open trades found.");
     return;
   }
-  await interaction.editReply({ embeds });
+  await interaction.editReply(page);
+}
+
+async function handleMatchPagination(
+  interaction: ButtonInteraction,
+  ownerId: string,
+  pageValue: string
+): Promise<void> {
+  if (interaction.user.id !== ownerId) {
+    await interaction.reply({ content: "Only the player who requested these matches can use these buttons.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!interaction.guildId || !/^\d+$/.test(pageValue)) {
+    await interaction.reply({ content: "These match results are no longer available.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const page = await buildFindMatchesPage(interaction.guildId, ownerId, Number.parseInt(pageValue, 10));
+  if (!page) {
+    await interaction.update({ content: "No matching open trades found.", embeds: [], components: [] });
+    return;
+  }
+  await interaction.update(page);
+}
+
+interface TradeMatchResult {
+  trade: Trade;
+  cardType: CardType;
+  requestedCardIds: string[];
+  offeredCardIds: string[];
+}
+
+function findMatchesForOpenTrades(guildId: string, ownerId: string): TradeMatchResult[] {
+  return getOpenTrades(ownerId).flatMap((openTrade) =>
+    findCompatibleOpenTrades(guildId, ownerId, openTrade.requesting, openTrade.sending).map((trade) => ({
+      trade,
+      cardType: openTrade.cardType,
+      requestedCardIds: openTrade.requesting,
+      offeredCardIds: openTrade.sending
+    }))
+  );
+}
+
+async function buildFindMatchesPage(guildId: string, ownerId: string, requestedPage: number) {
+  const matches = findMatchesForOpenTrades(guildId, ownerId);
+  if (!matches.length) {
+    return undefined;
+  }
+
+  const matchesByCardType = new Map<CardType, TradeMatchResult[]>();
+  for (const match of matches) {
+    const typeMatches = matchesByCardType.get(match.cardType) ?? [];
+    typeMatches.push(match);
+    matchesByCardType.set(match.cardType, typeMatches);
+  }
+  const pageCount = Math.max(
+    ...[...matchesByCardType.values()].map((typeMatches) => Math.ceil(typeMatches.length / MATCHES_PER_PAGE))
+  );
+  const page = Math.min(Math.max(requestedPage, 0), pageCount - 1);
+  const { arrow, emojiByName } = await getTradeMatchEmojis(guildId);
+  const embeds: EmbedBuilder[] = [];
+  for (const cardType of CARD_TYPES) {
+    const typeMatches = matchesByCardType.get(cardType);
+    if (!typeMatches) {
+      continue;
+    }
+
+    const pageMatches = typeMatches.slice(page * MATCHES_PER_PAGE, (page + 1) * MATCHES_PER_PAGE);
+    if (!pageMatches.length) {
+      continue;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${CARD_CATALOG[cardType].label}: ${typeMatches.length} Potential Match${typeMatches.length === 1 ? "" : "es"}`)
+      .setFooter({ text: `Page ${page + 1} of ${pageCount}` });
+    for (const [index, { trade, requestedCardIds, offeredCardIds }] of pageMatches.entries()) {
+      const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
+      const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
+      const link = `https://discord.com/channels/${guildId}/${trade.channelId}/${trade.messageId}`;
+      embed.addFields({
+        name: `${page * MATCHES_PER_PAGE + index + 1}.`,
+        value:
+          `[View matching trade](<${link}>) ${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
+          `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
+      });
+    }
+    embeds.push(embed);
+  }
+
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`matches:${ownerId}:${page - 1}`)
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId(`matches:${ownerId}:${page + 1}`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(page === pageCount - 1)
+  );
+  return { embeds, components: [buttons] };
 }
 
 async function getTradeChannel(
@@ -290,6 +373,10 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const [action, id, operation] = interaction.customId.split(":");
   if (action === "draft" && operation) {
     await handleDraftButton(interaction, id, operation);
+    return;
+  }
+  if (action === "matches" && id && operation) {
+    await handleMatchPagination(interaction, id, operation);
     return;
   }
   if (action === "close" && id) {
