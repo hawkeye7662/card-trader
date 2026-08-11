@@ -2,6 +2,7 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import {
   Client,
+  ChannelType,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
@@ -16,21 +17,26 @@ import {
   closeAllOpenTrades,
   closeAllExcessOpenTrades,
   closeExcessOpenTrades,
+  closeOpenTradesByType,
   closeTrade,
-  countOpenTrades,
   countRecentTrades,
   createTrade,
   deleteTradeMatchNotification,
+  deleteTradeThread,
+  deleteTradeThreadPost as deleteStoredTradeThreadPost,
   findCompatibleOpenTrades,
   getClanTag,
   getClosedTrades,
+  getOpenTrades,
   getTrade,
-  getTradeCooldown,
   getTradeMatchNotification,
+  getTradeThreadId,
+  getTradeThreadPost,
   hasRecentIdenticalTrade,
   saveClanTag,
   saveTradeMatchNotification,
-  setTradeCooldown,
+  saveTradeThread,
+  saveTradeThreadPost,
   type Trade
 } from "./database.js";
 import { renderTrade } from "./renderer.js";
@@ -39,6 +45,7 @@ import {
   buildDraftEmbed,
   buildTradeButtons,
   buildTradeEmbed,
+  buildTradeThreadEmbed,
   MAX_CARDS_PER_SIDE,
   type TradeDraft
 } from "./trade-view.js";
@@ -54,16 +61,16 @@ const publishingUsers = new Set<string>();
 const MAX_OPEN_TRADES = 3;
 const MAX_POSTS_PER_WINDOW = 3;
 const POST_WINDOW_MS = 30 * 60 * 1_000;
-const CLOSED_TRADE_COOLDOWN_MS = 5 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 const MAX_MATCH_LINKS = 3;
+const MAX_FIND_MATCH_LINKS = 10;
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
+const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
   const excessTrades = closeAllExcessOpenTrades(MAX_OPEN_TRADES);
   for (const trade of excessTrades) {
-    setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
     await closeTradePost(trade);
   }
   for (const trade of getClosedTrades()) {
@@ -114,6 +121,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     await handleCloseAllTradesCommand(interaction);
     return;
   }
+  if (type === "find-matches") {
+    await handleFindMatchesCommand(interaction);
+    return;
+  }
   if (!isCardType(type)) {
     await interaction.reply({ content: "Unknown card type.", flags: MessageFlags.Ephemeral });
     return;
@@ -144,7 +155,6 @@ async function handleCloseAllTradesCommand(interaction: ChatInputCommandInteract
     return;
   }
 
-  setTradeCooldown(interaction.user.id, CLOSED_TRADE_COOLDOWN_MS);
   for (const trade of trades) {
     try {
       await closeTradePost(trade);
@@ -154,6 +164,77 @@ async function handleCloseAllTradesCommand(interaction: ChatInputCommandInteract
   }
 
   await interaction.editReply(`Closed your ${trades.length} open trade${trades.length === 1 ? "" : "s"}.`);
+}
+
+async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guildId) {
+    await interaction.reply({ content: "I can only find matches in a server.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const matchedTrades = new Map<string, Trade>();
+  for (const trade of getOpenTrades(interaction.user.id)) {
+    for (const match of findCompatibleOpenTrades(interaction.guildId, interaction.user.id, trade.requesting, trade.sending)) {
+      matchedTrades.set(match.id, match);
+    }
+  }
+
+  if (!matchedTrades.size) {
+    await interaction.reply({ content: "No matching open trades found.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const matches = [...matchedTrades.values()];
+  const links = matches.slice(0, MAX_FIND_MATCH_LINKS).map((trade) => {
+    const label = CARD_CATALOG[trade.cardType].label;
+    return `• [${label} trade](<https://discord.com/channels/${interaction.guildId}/${trade.channelId}/${trade.messageId}>)`;
+  });
+  const overflowNotice = matches.length > links.length ? `\n*Showing the first ${links.length} matches.*` : "";
+  await interaction.reply({
+    content: `**Potential matches (${matches.length})**\n${links.join("\n")}${overflowNotice}`,
+    flags: MessageFlags.Ephemeral
+  });
+}
+
+async function getTradeChannel(
+  channel: NonNullable<ChatInputCommandInteraction["channel"]>,
+  cardType: CardType
+) {
+  if (channel.isThread()) {
+    return channel;
+  }
+
+  const threadId = getTradeThreadId(channel.id, cardType);
+  if (threadId) {
+    try {
+      const thread = await client.channels.fetch(threadId);
+      if (thread?.isThread() && thread.isSendable()) {
+        if (thread.archived) {
+          await thread.setArchived(false);
+        }
+        if (thread.name !== getTradeThreadName(cardType)) {
+          await thread.setName(getTradeThreadName(cardType));
+        }
+        return thread;
+      }
+    } catch (error) {
+      if (!hasDiscordErrorCode(error, UNKNOWN_CHANNEL_ERROR_CODE)) {
+        throw error;
+      }
+    }
+    deleteTradeThread(channel.id, cardType);
+  }
+
+  if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) {
+    throw new Error("Trade threads can only be created from a server text channel.");
+  }
+
+  const thread = await channel.threads.create({
+    name: getTradeThreadName(cardType),
+    autoArchiveDuration: 1_440
+  });
+  saveTradeThread(channel.id, cardType, thread.id);
+  return thread;
 }
 
 async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
@@ -244,7 +325,7 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     return;
   }
 
-  if (!interaction.channel?.isSendable()) {
+  if (!interaction.guildId || !interaction.channel?.isSendable()) {
     await interaction.reply({ content: "I can only post trades in a server text channel.", flags: MessageFlags.Ephemeral });
     return;
   }
@@ -261,20 +342,12 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
   try {
     const excessTrades = closeExcessOpenTrades(interaction.user.id, MAX_OPEN_TRADES);
     for (const trade of excessTrades) {
-      setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
       await closeTradePost(trade);
     }
 
-    const cooldownUntil = getTradeCooldown(interaction.user.id);
-    if (cooldownUntil) {
-      const remainingSeconds = Math.ceil((cooldownUntil - Date.now()) / 1_000);
-      await interaction.reply({
-        content: `After closing a trade, you can publish another one in ${formatDuration(remainingSeconds)}.`,
-        flags: MessageFlags.Ephemeral
-      });
-      return;
-    }
-    if (countOpenTrades(interaction.user.id) >= MAX_OPEN_TRADES) {
+    const openTrades = getOpenTrades(interaction.user.id);
+    const openTradesOfType = openTrades.filter((trade) => trade.cardType === draft.cardType);
+    if (openTrades.length - openTradesOfType.length >= MAX_OPEN_TRADES) {
       await interaction.reply({
         content: `You already have ${MAX_OPEN_TRADES} open trades. Close one before posting another.`,
         flags: MessageFlags.Ephemeral
@@ -298,6 +371,10 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
 
     const useAllCardsTile = draft.requestAllOther && requesting.length >= MAX_CARDS_PER_SIDE;
     const attachment = await renderTrade(draft.cardType, sending, requesting, useAllCardsTile);
+    const replacedTrades = closeOpenTradesByType(interaction.user.id, draft.cardType);
+    for (const trade of replacedTrades) {
+      await closeTradePost(trade);
+    }
     const clanTag = getClanTag(interaction.user.id);
     const message = await interaction.channel.send({
       content: `<@${interaction.user.id}>`,
@@ -318,6 +395,20 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       closedAt: null
     });
     drafts.delete(draft.id);
+    let threadPostFailed = false;
+    try {
+      const tradeThread = await getTradeChannel(interaction.channel, draft.cardType);
+      const threadMessage = await tradeThread.send({
+        content: `<@${interaction.user.id}>`,
+        embeds: [buildTradeThreadEmbed(draft.cardType)],
+        files: [await renderTrade(draft.cardType, sending, requesting, useAllCardsTile)],
+        allowedMentions: { parse: [] }
+      });
+      saveTradeThreadPost(draft.id, threadMessage.id, threadMessage.channelId);
+    } catch (error) {
+      threadPostFailed = true;
+      console.error(`Could not create trade thread post ${draft.id}:`, error);
+    }
     if (interaction.guildId) {
       const matchingTrades = findCompatibleOpenTrades(
         interaction.guildId,
@@ -334,7 +425,13 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
         saveTradeMatchNotification(draft.id, matchMessage.id, matchMessage.channelId);
       }
     }
-    await interaction.update({ content: "Your trade offer has been posted.", embeds: [], components: [] });
+    await interaction.update({
+      content: threadPostFailed
+        ? "Your trade offer has been posted, but it could not be added to the browse thread."
+        : "Your trade offer has been posted.",
+      embeds: [],
+      components: []
+    });
   } finally {
     publishingUsers.delete(interaction.user.id);
   }
@@ -357,7 +454,6 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
     await interaction.reply({ content: "This trade was just closed.", flags: MessageFlags.Ephemeral });
     return;
   }
-  setTradeCooldown(trade.ownerId, CLOSED_TRADE_COOLDOWN_MS);
   await deleteTradeMatchAlert(tradeId);
 
   await interaction.update({
@@ -366,12 +462,14 @@ async function handleCloseButton(interaction: ButtonInteraction, tradeId: string
     components: []
   });
   scheduleClosedTradeDeletion(interaction.message, trade.id);
+  await deleteThreadTradePost(trade.id);
 }
 
 async function closeTradePost(trade: Trade): Promise<void> {
   await deleteTradeMatchAlert(trade.id);
   const channel = await client.channels.fetch(trade.channelId);
   if (!channel?.isTextBased()) {
+    await deleteThreadTradePost(trade.id);
     return;
   }
 
@@ -384,22 +482,47 @@ async function closeTradePost(trade: Trade): Promise<void> {
     components: []
   });
   scheduleClosedTradeDeletion(message, trade.id);
+  await deleteThreadTradePost(trade.id);
 }
 
 async function deleteClosedTradePost(trade: Trade): Promise<void> {
   await deleteTradeMatchAlert(trade.id);
   try {
     const channel = await client.channels.fetch(trade.channelId);
-    if (!channel?.isTextBased()) {
-      return;
+    if (channel?.isTextBased()) {
+      await channel.messages.delete(trade.messageId);
     }
-    await channel.messages.delete(trade.messageId);
   } catch (error) {
-    if (hasDiscordErrorCode(error, UNKNOWN_MESSAGE_ERROR_CODE)) {
-      return;
+    if (
+      !hasDiscordErrorCode(error, UNKNOWN_MESSAGE_ERROR_CODE) &&
+      !hasDiscordErrorCode(error, UNKNOWN_CHANNEL_ERROR_CODE)
+    ) {
+      throw error;
     }
-    throw error;
   }
+  await deleteThreadTradePost(trade.id);
+}
+
+async function deleteThreadTradePost(tradeId: string): Promise<void> {
+  const threadPost = getTradeThreadPost(tradeId);
+  if (!threadPost) {
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(threadPost.channelId);
+    if (channel?.isTextBased()) {
+      await channel.messages.delete(threadPost.messageId);
+    }
+  } catch (error) {
+    if (
+      !hasDiscordErrorCode(error, UNKNOWN_MESSAGE_ERROR_CODE) &&
+      !hasDiscordErrorCode(error, UNKNOWN_CHANNEL_ERROR_CODE)
+    ) {
+      throw error;
+    }
+  }
+  deleteStoredTradeThreadPost(tradeId);
 }
 
 async function deleteTradeMatchAlert(tradeId: string): Promise<void> {
@@ -472,10 +595,8 @@ function buildClanLink(tag: string): string {
   return `https://link.clashofclans.com/en/?action=OpenClanProfile&tag=${tag.slice(1)}`;
 }
 
-function formatDuration(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+function getTradeThreadName(cardType: CardType): string {
+  return `${CARD_CATALOG[cardType].label} - Read Only`;
 }
 
 function hasDiscordErrorCode(error: unknown, code: number): boolean {

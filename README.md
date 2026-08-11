@@ -1,15 +1,23 @@
 # Clash Card Trading Bot
 
-A Discord.js bot for posting Clash card trade offers. Members run `/trade elixir`, `/trade dark-elixir`, `/trade builder-base`, or `/trade super-troop`, choose up to nine cards per side from private multi-select menus, then publish a rendered trade card. They can instead request every card they are not offering. Only the creator can close an offer, individually or with `/trade close-all`.
+A Discord.js bot for posting Clash card trade offers. Members run `/trade elixir`, `/trade dark-elixir`, `/trade builder-base`, or `/trade super-troop`, choose up to nine cards per side from private multi-select menus, then publish a rendered trade card. They can instead request every card they are not offering. Only the creator can close an offer, individually or with `/trade close-all`, and `/trade find-matches` privately lists matches for their open offers.
 
 Run `/clan-link tag:#YOURTAG` to save a clan for future offers. Those offers include a **Join Clan** link button pointing to the official Clash clan profile.
 
 ## Trade limits
 
 - Up to 3 open trades per player.
+- Posting a new offer for a card type closes that player's existing open offer(s) of the same type.
 - Up to 3 total posts per player in any rolling 30-minute period.
 - An identical offer cannot be posted again for 30 minutes, including after it is closed.
-- Closing a trade starts a 5-minute cooldown before that player can post again.
+
+## Trade threads
+
+The bot creates and reuses one public `Read Only` thread for each card type in
+every trading channel. Each trade is posted in the main channel and mirrored
+to its type thread without pinging the trader. It needs **Create Public
+Threads** and **Send Messages in Threads** permissions; grant **Manage
+Threads** as well so it can reopen an archived type thread.
 
 ## Setup
 

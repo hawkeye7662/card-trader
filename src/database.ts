@@ -32,20 +32,23 @@ database.exec(`
     updated_at TEXT NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS trade_cooldowns (
-    owner_id TEXT PRIMARY KEY,
-    cooldown_until INTEGER NOT NULL
-  );
-
   CREATE TABLE IF NOT EXISTS trade_match_notifications (
     trade_id TEXT PRIMARY KEY,
     message_id TEXT NOT NULL,
     channel_id TEXT NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS bot_metadata (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+  CREATE TABLE IF NOT EXISTS trade_threads (
+    parent_channel_id TEXT NOT NULL,
+    card_type TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    PRIMARY KEY (parent_channel_id, card_type)
+  );
+
+  CREATE TABLE IF NOT EXISTS trade_thread_posts (
+    trade_id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL
   );
 
   CREATE INDEX IF NOT EXISTS trades_owner_status_created_at
@@ -54,13 +57,6 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS trades_owner_created_at
     ON trades (owner_id, created_at DESC);
 `);
-
-const cooldownPolicyMigration = database
-  .prepare("INSERT OR IGNORE INTO bot_metadata (key, value) VALUES (?, ?)")
-  .run("close-cooldown-policy-v1", new Date().toISOString());
-if (cooldownPolicyMigration.changes === 1) {
-  database.prepare("DELETE FROM trade_cooldowns").run();
-}
 
 export interface Trade {
   id: string;
@@ -141,6 +137,25 @@ export function closeAllOpenTrades(ownerId: string): Trade[] {
   })();
 }
 
+export function closeOpenTradesByType(ownerId: string, cardType: CardType): Trade[] {
+  return database.transaction(() => {
+    const rows = database
+      .prepare("SELECT * FROM trades WHERE owner_id = ? AND card_type = ? AND status = 'open' ORDER BY created_at DESC")
+      .all(ownerId, cardType) as TradeRow[];
+    if (!rows.length) {
+      return [];
+    }
+
+    const closedAt = new Date().toISOString();
+    const close = database.prepare("UPDATE trades SET status = 'closed', closed_at = ? WHERE id = ?");
+    for (const row of rows) {
+      close.run(closedAt, row.id);
+    }
+
+    return rows.map((row) => toTrade({ ...row, status: "closed", closed_at: closedAt }));
+  })();
+}
+
 export function closeExcessOpenTrades(ownerId: string, maximumOpenTrades: number): Trade[] {
   return database.transaction(() => {
     const rows = database
@@ -172,6 +187,13 @@ export function getClosedTrades(): Trade[] {
   const rows = database
     .prepare("SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC")
     .all() as TradeRow[];
+  return rows.map(toTrade);
+}
+
+export function getOpenTrades(ownerId: string): Trade[] {
+  const rows = database
+    .prepare("SELECT * FROM trades WHERE owner_id = ? AND status = 'open' ORDER BY created_at DESC")
+    .all(ownerId) as TradeRow[];
   return rows.map(toTrade);
 }
 
@@ -260,23 +282,6 @@ export function getClanTag(ownerId: string): string | undefined {
   return row?.clan_tag;
 }
 
-export function getTradeCooldown(ownerId: string): number | undefined {
-  const row = database
-    .prepare("SELECT cooldown_until FROM trade_cooldowns WHERE owner_id = ?")
-    .get(ownerId) as { cooldown_until: number } | undefined;
-  return row && row.cooldown_until > Date.now() ? row.cooldown_until : undefined;
-}
-
-export function setTradeCooldown(ownerId: string, cooldownMs: number): void {
-  database
-    .prepare(`
-      INSERT INTO trade_cooldowns (owner_id, cooldown_until)
-      VALUES (?, ?)
-      ON CONFLICT(owner_id) DO UPDATE SET cooldown_until = excluded.cooldown_until
-    `)
-    .run(ownerId, Date.now() + cooldownMs);
-}
-
 export interface TradeMatchNotification {
   messageId: string;
   channelId: string;
@@ -298,6 +303,51 @@ export function getTradeMatchNotification(tradeId: string): TradeMatchNotificati
 
 export function deleteTradeMatchNotification(tradeId: string): void {
   database.prepare("DELETE FROM trade_match_notifications WHERE trade_id = ?").run(tradeId);
+}
+
+export function getTradeThreadId(parentChannelId: string, cardType: CardType): string | undefined {
+  const row = database
+    .prepare("SELECT thread_id FROM trade_threads WHERE parent_channel_id = ? AND card_type = ?")
+    .get(parentChannelId, cardType) as { thread_id: string } | undefined;
+  return row?.thread_id;
+}
+
+export function saveTradeThread(parentChannelId: string, cardType: CardType, threadId: string): void {
+  database
+    .prepare(`
+      INSERT INTO trade_threads (parent_channel_id, card_type, thread_id)
+      VALUES (?, ?, ?)
+      ON CONFLICT(parent_channel_id, card_type) DO UPDATE SET thread_id = excluded.thread_id
+    `)
+    .run(parentChannelId, cardType, threadId);
+}
+
+export function deleteTradeThread(parentChannelId: string, cardType: CardType): void {
+  database
+    .prepare("DELETE FROM trade_threads WHERE parent_channel_id = ? AND card_type = ?")
+    .run(parentChannelId, cardType);
+}
+
+export interface TradeThreadPost {
+  messageId: string;
+  channelId: string;
+}
+
+export function saveTradeThreadPost(tradeId: string, messageId: string, channelId: string): void {
+  database
+    .prepare("INSERT OR REPLACE INTO trade_thread_posts (trade_id, message_id, channel_id) VALUES (?, ?, ?)")
+    .run(tradeId, messageId, channelId);
+}
+
+export function getTradeThreadPost(tradeId: string): TradeThreadPost | undefined {
+  const row = database
+    .prepare("SELECT message_id, channel_id FROM trade_thread_posts WHERE trade_id = ?")
+    .get(tradeId) as { message_id: string; channel_id: string } | undefined;
+  return row ? { messageId: row.message_id, channelId: row.channel_id } : undefined;
+}
+
+export function deleteTradeThreadPost(tradeId: string): void {
+  database.prepare("DELETE FROM trade_thread_posts WHERE trade_id = ?").run(tradeId);
 }
 
 function toTrade(row: TradeRow): Trade {

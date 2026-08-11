@@ -18,6 +18,9 @@ for (const type of CARD_TYPES) {
 command.addSubcommand((subcommand) =>
   subcommand.setName("close-all").setDescription("Close all of your open trade offers")
 );
+command.addSubcommand((subcommand) =>
+  subcommand.setName("find-matches").setDescription("Find matches for your open trade offers")
+);
 
 const clanLinkCommand = new SlashCommandBuilder()
   .setName("clan-link")

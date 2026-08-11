@@ -123,6 +123,15 @@ export function buildTradeEmbed(
   return embed;
 }
 
+export function buildTradeThreadEmbed(type: CardType): EmbedBuilder {
+  const category = CARD_CATALOG[type];
+  return new EmbedBuilder()
+    .setColor(toColor(category.accent))
+    .setTitle("Trade Offer")
+    .setDescription("Browse-only copy of a trade posted in the main channel.")
+    .setImage("attachment://trade.png");
+}
+
 export function buildTradeButtons(tradeId: string, clanLink?: string): ActionRowBuilder<ButtonBuilder> {
   const buttons = [
     new ButtonBuilder().setCustomId(`close:${tradeId}`).setLabel("Close Trade").setEmoji("🗑️").setStyle(ButtonStyle.Danger)
