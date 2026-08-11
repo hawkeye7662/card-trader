@@ -65,6 +65,7 @@ const POST_WINDOW_MS = 30 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 const MAX_MATCH_LINKS = 3;
 const MAX_FIND_MATCH_LINKS = 10;
+const MAX_FIND_MATCH_DESCRIPTION_LENGTH = 4_000;
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
 
@@ -103,7 +104,7 @@ async function handleInteraction(interaction: Interaction): Promise<void> {
       await handleButton(interaction);
     }
   } catch (error) {
-    console.error("Interaction failed:", error);
+    logInteractionError("Interaction failed", error);
     await sendInteractionFailure(interaction);
   }
 }
@@ -126,7 +127,7 @@ async function sendInteractionFailure(interaction: Interaction): Promise<void> {
       await interaction.reply(response);
     }
   } catch (error) {
-    console.error("Could not send interaction failure response:", error);
+    logInteractionError("Could not send interaction failure response", error);
   }
 }
 
@@ -218,14 +219,28 @@ async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction
     const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
     const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
     return (
-      `• [${label} trade](<https://discord.com/channels/${interaction.guildId}/${trade.channelId}/${trade.messageId}>)\n` +
+      `• [${label} trade](<https://discord.com/channels/${interaction.guildId}/${trade.channelId}/${trade.messageId}>) ` +
       `${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
       `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
     );
   });
-  const overflowNotice = matches.length > links.length ? `\n*Showing the first ${links.length} matches.*` : "";
+  const displayedLinks: string[] = [];
+  for (const link of links) {
+    const nextLength = displayedLinks.join("\n").length + link.length + 1;
+    if (nextLength > MAX_FIND_MATCH_DESCRIPTION_LENGTH) {
+      break;
+    }
+    displayedLinks.push(link);
+  }
+  const overflowNotice = matches.length > displayedLinks.length
+    ? `\n*Showing the first ${displayedLinks.length} matches.*`
+    : "";
   await interaction.reply({
-    content: `**Potential matches (${matches.length})**\n${links.join("\n")}${overflowNotice}`,
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(`Potential Matches (${matches.length})`)
+        .setDescription(`${displayedLinks.join("\n")}${overflowNotice}`)
+    ],
     flags: MessageFlags.Ephemeral
   });
 }
@@ -628,7 +643,7 @@ async function buildTradeMatchEmbed(
     const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
     const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
     return (
-      `**${index + 1}.** [View matching trade](<${link}>)\n` +
+      `**${index + 1}.** [View matching trade](<${link}>) ` +
       `${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
       `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
     );
@@ -703,6 +718,25 @@ function getTradeThreadName(cardType: CardType): string {
 
 function hasDiscordErrorCode(error: unknown, code: number): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+function logInteractionError(context: string, error: unknown): void {
+  const details = {
+    name: error instanceof Error ? error.name : undefined,
+    message: error instanceof Error ? error.message : undefined,
+    code: getErrorProperty(error, "code"),
+    status: getErrorProperty(error, "status"),
+    rawError: getErrorProperty(error, "rawError"),
+    stack: error instanceof Error ? error.stack : undefined
+  };
+  console.error(`${context}: ${JSON.stringify(details, null, 2)}`);
+}
+
+function getErrorProperty(error: unknown, property: string): unknown {
+  if (typeof error !== "object" || error === null || !(property in error)) {
+    return undefined;
+  }
+  return (error as Record<string, unknown>)[property];
 }
 
 client.login(token);
