@@ -128,7 +128,6 @@ export function buildTradeThreadEmbed(type: CardType): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(toColor(category.accent))
     .setTitle("Trade Offer")
-    .setDescription("Browse-only copy of a trade posted in the main channel.")
     .setImage("attachment://trade.png");
 }
 

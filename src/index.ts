@@ -396,8 +396,10 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     });
     drafts.delete(draft.id);
     let threadPostFailed = false;
+    let tradeThreadId: string | undefined;
     try {
       const tradeThread = await getTradeChannel(interaction.channel, draft.cardType);
+      tradeThreadId = tradeThread.id;
       const threadMessage = await tradeThread.send({
         content: `<@${interaction.user.id}>`,
         embeds: [buildTradeThreadEmbed(draft.cardType)],
@@ -419,7 +421,7 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       if (matchingTrades.length) {
         const matchMessage = await interaction.channel.send({
           content: `<@${interaction.user.id}>`,
-          embeds: [buildTradeMatchEmbed(draft.cardType, interaction.guildId, matchingTrades)],
+          embeds: [buildTradeMatchEmbed(draft.cardType, interaction.guildId, matchingTrades, tradeThreadId)],
           allowedMentions: { users: [interaction.user.id] }
         });
         saveTradeMatchNotification(draft.id, matchMessage.id, matchMessage.channelId);
@@ -566,7 +568,12 @@ function getRequestedCardIds(draft: TradeDraft): string[] {
     .filter((cardId) => !draft.sending.includes(cardId));
 }
 
-function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrades: ReturnType<typeof findCompatibleOpenTrades>): EmbedBuilder {
+function buildTradeMatchEmbed(
+  cardType: CardType,
+  guildId: string,
+  matchingTrades: ReturnType<typeof findCompatibleOpenTrades>,
+  tradeThreadId?: string
+): EmbedBuilder {
   const category = CARD_CATALOG[cardType];
   const displayedTrades = matchingTrades.slice(0, MAX_MATCH_LINKS);
   const links = displayedTrades.map((trade, index) => {
@@ -576,11 +583,12 @@ function buildTradeMatchEmbed(cardType: CardType, guildId: string, matchingTrade
   const overflowNotice = matchingTrades.length > displayedTrades.length
     ? `\n\n*Showing the first ${displayedTrades.length} matches.*`
     : "";
+  const threadNotice = tradeThreadId ? `\n\nBrowse all ${category.label.toLowerCase()}: <#${tradeThreadId}>` : "";
 
   return new EmbedBuilder()
     .setColor(Number.parseInt(category.accent.slice(1), 16))
     .setTitle(`${matchingTrades.length} Potential Trade Match${matchingTrades.length === 1 ? "" : "es"}`)
-    .setDescription(`${links.join("\n")}${overflowNotice}`);
+    .setDescription(`${links.join("\n")}${overflowNotice}${threadNotice}`);
 }
 
 function normalizeClanTag(value: string): string | undefined {
