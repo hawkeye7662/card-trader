@@ -118,7 +118,9 @@ async function sendInteractionFailure(interaction: Interaction): Promise<void> {
     flags: MessageFlags.Ephemeral
   };
   try {
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({ content: response.content, embeds: [], components: [] });
+    } else if (interaction.replied) {
       await interaction.followUp(response);
     } else {
       await interaction.reply(response);
@@ -359,35 +361,36 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
     return;
   }
 
+  const openTrades = getOpenTrades(interaction.user.id);
+  const openTradesOfType = openTrades.filter((trade) => trade.cardType === draft.cardType);
+  if (openTrades.length - openTradesOfType.length >= MAX_OPEN_TRADES) {
+    await interaction.reply({
+      content: `You already have ${MAX_OPEN_TRADES} open trades. Close one before posting another.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+  if (countRecentTrades(interaction.user.id, POST_WINDOW_MS) >= MAX_POSTS_PER_WINDOW) {
+    await interaction.reply({
+      content: `You can post at most ${MAX_POSTS_PER_WINDOW} trades every 30 minutes.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+  if (hasRecentIdenticalTrade(interaction.user.id, draft.cardType, draft.sending, requestedCardIds, POST_WINDOW_MS)) {
+    await interaction.reply({
+      content: "You already posted this exact trade in the last 30 minutes.",
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
   publishingUsers.add(interaction.user.id);
   try {
     const excessTrades = closeExcessOpenTrades(interaction.user.id, MAX_OPEN_TRADES);
     for (const trade of excessTrades) {
       await closeTradePost(trade);
-    }
-
-    const openTrades = getOpenTrades(interaction.user.id);
-    const openTradesOfType = openTrades.filter((trade) => trade.cardType === draft.cardType);
-    if (openTrades.length - openTradesOfType.length >= MAX_OPEN_TRADES) {
-      await interaction.reply({
-        content: `You already have ${MAX_OPEN_TRADES} open trades. Close one before posting another.`,
-        flags: MessageFlags.Ephemeral
-      });
-      return;
-    }
-    if (countRecentTrades(interaction.user.id, POST_WINDOW_MS) >= MAX_POSTS_PER_WINDOW) {
-      await interaction.reply({
-        content: `You can post at most ${MAX_POSTS_PER_WINDOW} trades every 30 minutes.`,
-        flags: MessageFlags.Ephemeral
-      });
-      return;
-    }
-    if (hasRecentIdenticalTrade(interaction.user.id, draft.cardType, draft.sending, requestedCardIds, POST_WINDOW_MS)) {
-      await interaction.reply({
-        content: "You already posted this exact trade in the last 30 minutes.",
-        flags: MessageFlags.Ephemeral
-      });
-      return;
     }
 
     const useAllCardsTile = draft.requestAllOther && requesting.length >= MAX_CARDS_PER_SIDE;
@@ -442,13 +445,22 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
       if (matchingTrades.length) {
         const matchMessage = await interaction.channel.send({
           content: `<@${interaction.user.id}>`,
-          embeds: [buildTradeMatchEmbed(draft.cardType, interaction.guildId, matchingTrades, tradeThreadId)],
+          embeds: [
+            await buildTradeMatchEmbed(
+              draft.cardType,
+              interaction.guildId,
+              matchingTrades,
+              requestedCardIds,
+              draft.sending,
+              tradeThreadId
+            )
+          ],
           allowedMentions: { users: [interaction.user.id] }
         });
         saveTradeMatchNotification(draft.id, matchMessage.id, matchMessage.channelId);
       }
     }
-    await interaction.update({
+    await interaction.editReply({
       content: threadPostFailed
         ? "Your trade offer has been posted, but it could not be added to the browse thread."
         : "Your trade offer has been posted.",
@@ -589,17 +601,26 @@ function getRequestedCardIds(draft: TradeDraft): string[] {
     .filter((cardId) => !draft.sending.includes(cardId));
 }
 
-function buildTradeMatchEmbed(
+async function buildTradeMatchEmbed(
   cardType: CardType,
   guildId: string,
   matchingTrades: ReturnType<typeof findCompatibleOpenTrades>,
+  requestedCardIds: readonly string[],
+  offeredCardIds: readonly string[],
   tradeThreadId?: string
-): EmbedBuilder {
+): Promise<EmbedBuilder> {
   const category = CARD_CATALOG[cardType];
   const displayedTrades = matchingTrades.slice(0, MAX_MATCH_LINKS);
+  const { arrow, emojiByName } = await getTradeMatchEmojis(guildId);
   const links = displayedTrades.map((trade, index) => {
     const link = `https://discord.com/channels/${guildId}/${trade.channelId}/${trade.messageId}`;
-    return `**${index + 1}.** [View matching trade](<${link}>)`;
+    const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
+    const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
+    return (
+      `**${index + 1}.** [View matching trade](<${link}>)\n` +
+      `They have: ${formatTradeMatchCards(cardType, cardsTheyHave, emojiByName)} ${arrow} ` +
+      `They want: ${formatTradeMatchCards(cardType, cardsTheyWant, emojiByName)}`
+    );
   });
   const overflowNotice = matchingTrades.length > displayedTrades.length
     ? `\n\n*Showing the first ${displayedTrades.length} matches.*`
@@ -611,6 +632,35 @@ function buildTradeMatchEmbed(
     .setColor(Number.parseInt(category.accent.slice(1), 16))
     .setTitle(`${matchingTrades.length} Potential Trade Match${matchingTrades.length === 1 ? "" : "es"}`)
     .setDescription(`${links.join("\n")}${overflowNotice}${threadNotice}`);
+}
+
+async function getTradeMatchEmojis(guildId: string): Promise<{ arrow: string; emojiByName: Map<string, string> }> {
+  const emojiByName = new Map<string, string>();
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const emojis = await guild.emojis.fetch();
+    for (const emoji of emojis.values()) {
+      if (emoji.name) {
+        emojiByName.set(emoji.name, emoji.toString());
+      }
+    }
+  } catch (error) {
+    console.error(`Could not fetch trade match emojis for guild ${guildId}:`, error);
+  }
+
+  return { arrow: emojiByName.get("trade_arrow") ?? "→", emojiByName };
+}
+
+function formatTradeMatchCards(cardType: CardType, cardIds: readonly string[], emojiByName: ReadonlyMap<string, string>): string {
+  return cardIds
+    .map((cardId) => {
+      const emoji = emojiByName.get(cardId.replaceAll("-", "_"));
+      if (emoji) {
+        return emoji;
+      }
+      return CARD_CATALOG[cardType].cards.find((card) => card.id === cardId)?.name ?? cardId;
+    })
+    .join(" ");
 }
 
 function normalizeClanTag(value: string): string | undefined {
