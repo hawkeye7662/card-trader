@@ -604,7 +604,8 @@ function buildTradeMatchEmbed(
   const overflowNotice = matchingTrades.length > displayedTrades.length
     ? `\n\n*Showing the first ${displayedTrades.length} matches.*`
     : "";
-  const threadNotice = tradeThreadId ? `\n\nBrowse all ${category.label.toLowerCase()}: <#${tradeThreadId}>` : "";
+  const tradeType = category.label.replace(/ Cards$/, "").toLowerCase();
+  const threadNotice = tradeThreadId ? `\n\nBrowse all open ${tradeType} trades: <#${tradeThreadId}>` : "";
 
   return new EmbedBuilder()
     .setColor(Number.parseInt(category.accent.slice(1), 16))
