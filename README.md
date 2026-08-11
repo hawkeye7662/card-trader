@@ -21,11 +21,11 @@ Threads** as well so it can reopen an archived type thread.
 
 ## Match emojis
 
-Match alerts use a card's custom emoji when it is named after the card ID with
-hyphens replaced by underscores, such as `elixir_archer` or
+Match alerts use a card's server or application emoji when it is named after
+the card ID with hyphens replaced by underscores, such as `elixir_archer` or
 `super_troop_super_archer`. Upload an optional `trade_arrow` custom emoji for
-the match direction. Missing emojis fall back to the card name and a Unicode
-arrow.
+the match direction. Missing card emojis display as `❔`, while a missing arrow
+falls back to a Unicode arrow.
 
 ## Setup
 

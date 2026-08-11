@@ -195,10 +195,14 @@ async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction
     return;
   }
 
-  const matchedTrades = new Map<string, Trade>();
+  const matchedTrades = new Map<string, { trade: Trade; requestedCardIds: string[]; offeredCardIds: string[] }>();
   for (const trade of getOpenTrades(interaction.user.id)) {
     for (const match of findCompatibleOpenTrades(interaction.guildId, interaction.user.id, trade.requesting, trade.sending)) {
-      matchedTrades.set(match.id, match);
+      matchedTrades.set(match.id, {
+        trade: match,
+        requestedCardIds: trade.requesting,
+        offeredCardIds: trade.sending
+      });
     }
   }
 
@@ -208,9 +212,16 @@ async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction
   }
 
   const matches = [...matchedTrades.values()];
-  const links = matches.slice(0, MAX_FIND_MATCH_LINKS).map((trade) => {
+  const { arrow, emojiByName } = await getTradeMatchEmojis(interaction.guildId);
+  const links = matches.slice(0, MAX_FIND_MATCH_LINKS).map(({ trade, requestedCardIds, offeredCardIds }) => {
     const label = CARD_CATALOG[trade.cardType].label;
-    return `• [${label} trade](<https://discord.com/channels/${interaction.guildId}/${trade.channelId}/${trade.messageId}>)`;
+    const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
+    const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
+    return (
+      `• [${label} trade](<https://discord.com/channels/${interaction.guildId}/${trade.channelId}/${trade.messageId}>)\n` +
+      `${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
+      `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
+    );
   });
   const overflowNotice = matches.length > links.length ? `\n*Showing the first ${links.length} matches.*` : "";
   await interaction.reply({
@@ -618,8 +629,8 @@ async function buildTradeMatchEmbed(
     const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
     return (
       `**${index + 1}.** [View matching trade](<${link}>)\n` +
-      `They have: ${formatTradeMatchCards(cardType, cardsTheyHave, emojiByName)} ${arrow} ` +
-      `They want: ${formatTradeMatchCards(cardType, cardsTheyWant, emojiByName)}`
+      `${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
+      `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
     );
   });
   const overflowNotice = matchingTrades.length > displayedTrades.length
@@ -639,26 +650,37 @@ async function getTradeMatchEmojis(guildId: string): Promise<{ arrow: string; em
   try {
     const guild = await client.guilds.fetch(guildId);
     const emojis = await guild.emojis.fetch();
-    for (const emoji of emojis.values()) {
-      if (emoji.name) {
-        emojiByName.set(emoji.name, emoji.toString());
-      }
+    addEmojisByName(emojiByName, emojis.values());
+  } catch (error) {
+    console.error(`Could not fetch server trade match emojis for guild ${guildId}:`, error);
+  }
+  try {
+    if (client.application) {
+      addEmojisByName(emojiByName, (await client.application.emojis.fetch()).values());
     }
   } catch (error) {
-    console.error(`Could not fetch trade match emojis for guild ${guildId}:`, error);
+    console.error("Could not fetch application trade match emojis:", error);
   }
 
   return { arrow: emojiByName.get("trade_arrow") ?? "→", emojiByName };
 }
 
-function formatTradeMatchCards(cardType: CardType, cardIds: readonly string[], emojiByName: ReadonlyMap<string, string>): string {
+function addEmojisByName(
+  emojiByName: Map<string, string>,
+  emojis: Iterable<{ name: string | null; toString(): string }>
+): void {
+  for (const emoji of emojis) {
+    if (emoji.name) {
+      emojiByName.set(emoji.name, emoji.toString());
+    }
+  }
+}
+
+function formatTradeMatchCards(cardIds: readonly string[], emojiByName: ReadonlyMap<string, string>): string {
   return cardIds
     .map((cardId) => {
       const emoji = emojiByName.get(cardId.replaceAll("-", "_"));
-      if (emoji) {
-        return emoji;
-      }
-      return CARD_CATALOG[cardType].cards.find((card) => card.id === cardId)?.name ?? cardId;
+      return emoji ?? "❔";
     })
     .join(" ");
 }
