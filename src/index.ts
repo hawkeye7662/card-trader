@@ -280,17 +280,25 @@ async function buildFindMatchesPage(guildId: string, ownerId: string, requestedP
     const embed = new EmbedBuilder()
       .setTitle(`${CARD_CATALOG[cardType].label}: ${typeMatches.length} Potential Match${typeMatches.length === 1 ? "" : "es"}`)
       .setFooter({ text: `Page ${page + 1} of ${pageCount}` });
-    for (const [index, { trade, requestedCardIds, offeredCardIds }] of pageMatches.entries()) {
+    const matchLines = pageMatches.map(({ trade, requestedCardIds, offeredCardIds }, index) => {
       const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
       const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
       const link = `https://discord.com/channels/${guildId}/${trade.channelId}/${trade.messageId}`;
-      embed.addFields({
-        name: `${page * MATCHES_PER_PAGE + index + 1}.`,
-        value:
-          `[View matching trade](<${link}>) ${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
-          `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
-      });
+      return (
+        `**${page * MATCHES_PER_PAGE + index + 1}.** [View matching trade](<${link}>) ` +
+        `${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
+        `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
+      );
+    });
+    const displayedLines: string[] = [];
+    for (const matchLine of matchLines) {
+      const nextLength = displayedLines.join("\n").length + matchLine.length + 1;
+      if (nextLength > MAX_MATCH_EMBED_DESCRIPTION_LENGTH) {
+        break;
+      }
+      displayedLines.push(matchLine);
     }
+    embed.setDescription(displayedLines.join("\n"));
     embeds.push(embed);
   }
 
