@@ -14,6 +14,7 @@ import {
   type ChatInputCommandInteraction,
   type Interaction,
   type InteractionReplyOptions,
+  StringSelectMenuBuilder,
   type StringSelectMenuInteraction
 } from "discord.js";
 import { CARD_CATALOG, CARD_TYPES, findCards, isCardType, type CardType } from "./cards.js";
@@ -148,6 +149,14 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     await handleCloseAllTradesCommand(interaction);
     return;
   }
+  if (type === "close") {
+    await handleManageTradeCommand(interaction, "close");
+    return;
+  }
+  if (type === "edit") {
+    await handleManageTradeCommand(interaction, "edit");
+    return;
+  }
   if (type === "find-matches") {
     await handleFindMatchesCommand(interaction);
     return;
@@ -191,6 +200,36 @@ async function handleCloseAllTradesCommand(interaction: ChatInputCommandInteract
   }
 
   await interaction.editReply(`Closed your ${trades.length} open trade${trades.length === 1 ? "" : "s"}.`);
+}
+
+async function handleManageTradeCommand(
+  interaction: ChatInputCommandInteraction,
+  action: "close" | "edit"
+): Promise<void> {
+  const trades = getOpenTrades(interaction.user.id);
+  if (!trades.length) {
+    await interaction.reply({ content: "You do not have any open trades.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const options = trades.map((trade) => ({
+    label: CARD_CATALOG[trade.cardType].label,
+    description: `${trade.sending.length} offered, ${trade.requesting.length} requested`,
+    value: trade.id
+  }));
+  const verb = action === "edit" ? "update" : "close";
+  await interaction.reply({
+    content: `Choose the trade you want to ${verb}.`,
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`manage:${action}`)
+          .setPlaceholder(`Select a trade to ${verb}`)
+          .addOptions(options)
+      )
+    ],
+    flags: MessageFlags.Ephemeral
+  });
 }
 
 async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -359,7 +398,15 @@ async function getTradeChannel(
 }
 
 async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
-  const [, draftId, side] = interaction.customId.split(":");
+  const [action, id, side] = interaction.customId.split(":");
+  if (action === "manage" && (id === "close" || id === "edit")) {
+    await handleManageTradeSelect(interaction, id);
+    return;
+  }
+  if (action !== "draft") {
+    return;
+  }
+  const draftId = id;
   if (!draftId || (side !== "sending" && side !== "requesting")) {
     return;
   }
@@ -375,6 +422,58 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
     draft.requestAllOther = false;
   }
   await interaction.update({ embeds: [buildDraftEmbed(draft)], components: buildDraftComponents(draft) });
+}
+
+async function handleManageTradeSelect(
+  interaction: StringSelectMenuInteraction,
+  action: "close" | "edit"
+): Promise<void> {
+  const trade = getTrade(interaction.values[0]);
+  if (!trade || trade.status !== "open") {
+    await interaction.reply({ content: "That trade is already closed or no longer exists.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (trade.ownerId !== interaction.user.id) {
+    await interaction.reply({ content: "You can only manage your own trades.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (action === "edit") {
+    const category = CARD_CATALOG[trade.cardType];
+    const requestedAllOther = category.cards
+      .map((card) => card.id)
+      .filter((cardId) => !trade.sending.includes(cardId))
+      .every((cardId) => trade.requesting.includes(cardId)) &&
+      trade.requesting.length === category.cards.length - trade.sending.length;
+    const draft: TradeDraft = {
+      id: randomUUID(),
+      ownerId: trade.ownerId,
+      cardType: trade.cardType,
+      sending: trade.sending,
+      requesting: requestedAllOther ? [] : trade.requesting,
+      requestAllOther: requestedAllOther
+    };
+    drafts.set(draft.id, draft);
+    await interaction.update({
+      content: "Update your trade, then publish the replacement.",
+      embeds: [buildDraftEmbed(draft)],
+      components: buildDraftComponents(draft)
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  if (!closeTrade(trade.id)) {
+    await interaction.editReply("That trade was just closed.");
+    return;
+  }
+  try {
+    await closeTradePost(trade);
+    await interaction.editReply("Trade closed.");
+  } catch (error) {
+    console.error(`Could not close trade ${trade.id}:`, error);
+    await interaction.editReply("The trade was closed, but its Discord post could not be removed.");
+  }
 }
 
 async function handleButton(interaction: ButtonInteraction): Promise<void> {

@@ -19,6 +19,12 @@ command.addSubcommand((subcommand) =>
   subcommand.setName("close-all").setDescription("Close all of your open trade offers")
 );
 command.addSubcommand((subcommand) =>
+  subcommand.setName("close").setDescription("Choose one of your open trade offers to close")
+);
+command.addSubcommand((subcommand) =>
+  subcommand.setName("edit").setDescription("Choose one of your open trade offers to update")
+);
+command.addSubcommand((subcommand) =>
   subcommand.setName("find-matches").setDescription("Find matches for your open trade offers")
 );
 
