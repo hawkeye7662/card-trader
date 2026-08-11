@@ -65,7 +65,7 @@ const POST_WINDOW_MS = 30 * 60 * 1_000;
 const CLOSED_TRADE_DELETE_DELAY_MS = 60 * 1_000;
 const MAX_MATCH_LINKS = 3;
 const MAX_FIND_MATCH_LINKS = 10;
-const MAX_FIND_MATCH_DESCRIPTION_LENGTH = 4_000;
+const MAX_MATCH_EMBED_DESCRIPTION_LENGTH = 3_800;
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
 
@@ -196,53 +196,33 @@ async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction
     return;
   }
 
-  const matchedTrades = new Map<string, { trade: Trade; requestedCardIds: string[]; offeredCardIds: string[] }>();
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const matchEmojis = await getTradeMatchEmojis(interaction.guildId);
+  const embeds: EmbedBuilder[] = [];
   for (const trade of getOpenTrades(interaction.user.id)) {
-    for (const match of findCompatibleOpenTrades(interaction.guildId, interaction.user.id, trade.requesting, trade.sending)) {
-      matchedTrades.set(match.id, {
-        trade: match,
-        requestedCardIds: trade.requesting,
-        offeredCardIds: trade.sending
-      });
+    const matches = findCompatibleOpenTrades(interaction.guildId, interaction.user.id, trade.requesting, trade.sending);
+    if (!matches.length) {
+      continue;
     }
+    embeds.push(
+      await buildTradeMatchEmbed(
+        trade.cardType,
+        interaction.guildId,
+        matches,
+        trade.requesting,
+        trade.sending,
+        getTradeThreadId(trade.channelId, trade.cardType),
+        matchEmojis,
+        MAX_FIND_MATCH_LINKS
+      )
+    );
   }
 
-  if (!matchedTrades.size) {
-    await interaction.reply({ content: "No matching open trades found.", flags: MessageFlags.Ephemeral });
+  if (!embeds.length) {
+    await interaction.editReply("No matching open trades found.");
     return;
   }
-
-  const matches = [...matchedTrades.values()];
-  const { arrow, emojiByName } = await getTradeMatchEmojis(interaction.guildId);
-  const links = matches.slice(0, MAX_FIND_MATCH_LINKS).map(({ trade, requestedCardIds, offeredCardIds }) => {
-    const label = CARD_CATALOG[trade.cardType].label;
-    const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
-    const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
-    return (
-      `• [${label} trade](<https://discord.com/channels/${interaction.guildId}/${trade.channelId}/${trade.messageId}>) ` +
-      `${formatTradeMatchCards(cardsTheyHave, emojiByName)} ${arrow} ` +
-      `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
-    );
-  });
-  const displayedLinks: string[] = [];
-  for (const link of links) {
-    const nextLength = displayedLinks.join("\n").length + link.length + 1;
-    if (nextLength > MAX_FIND_MATCH_DESCRIPTION_LENGTH) {
-      break;
-    }
-    displayedLinks.push(link);
-  }
-  const overflowNotice = matches.length > displayedLinks.length
-    ? `\n*Showing the first ${displayedLinks.length} matches.*`
-    : "";
-  await interaction.reply({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle(`Potential Matches (${matches.length})`)
-        .setDescription(`${displayedLinks.join("\n")}${overflowNotice}`)
-    ],
-    flags: MessageFlags.Ephemeral
-  });
+  await interaction.editReply({ embeds });
 }
 
 async function getTradeChannel(
@@ -412,6 +392,7 @@ async function handleDraftButton(interaction: ButtonInteraction, draftId: string
   }
 
   await interaction.deferUpdate();
+  await interaction.editReply({ content: "Publishing your trade...", embeds: [], components: [] });
   publishingUsers.add(interaction.user.id);
   try {
     const excessTrades = closeExcessOpenTrades(interaction.user.id, MAX_OPEN_TRADES);
@@ -633,12 +614,14 @@ async function buildTradeMatchEmbed(
   matchingTrades: ReturnType<typeof findCompatibleOpenTrades>,
   requestedCardIds: readonly string[],
   offeredCardIds: readonly string[],
-  tradeThreadId?: string
+  tradeThreadId?: string,
+  matchEmojis?: TradeMatchEmojis,
+  maximumLinks = MAX_MATCH_LINKS
 ): Promise<EmbedBuilder> {
   const category = CARD_CATALOG[cardType];
-  const displayedTrades = matchingTrades.slice(0, MAX_MATCH_LINKS);
-  const { arrow, emojiByName } = await getTradeMatchEmojis(guildId);
-  const links = displayedTrades.map((trade, index) => {
+  const displayedTrades = matchingTrades.slice(0, maximumLinks);
+  const { arrow, emojiByName } = matchEmojis ?? await getTradeMatchEmojis(guildId);
+  const matchLinks = displayedTrades.map((trade, index) => {
     const link = `https://discord.com/channels/${guildId}/${trade.channelId}/${trade.messageId}`;
     const cardsTheyHave = trade.sending.filter((cardId) => requestedCardIds.includes(cardId));
     const cardsTheyWant = trade.requesting.filter((cardId) => offeredCardIds.includes(cardId));
@@ -648,19 +631,32 @@ async function buildTradeMatchEmbed(
       `${formatTradeMatchCards(cardsTheyWant, emojiByName)}`
     );
   });
-  const overflowNotice = matchingTrades.length > displayedTrades.length
-    ? `\n\n*Showing the first ${displayedTrades.length} matches.*`
+  const links: string[] = [];
+  for (const matchLink of matchLinks) {
+    const nextLength = links.join("\n").length + matchLink.length + 1;
+    if (nextLength > MAX_MATCH_EMBED_DESCRIPTION_LENGTH) {
+      break;
+    }
+    links.push(matchLink);
+  }
+  const overflowNotice = matchingTrades.length > links.length
+    ? `\n\n*Showing the first ${links.length} matches.* Use \`/trade find-matches\` to find more matches.`
     : "";
   const tradeType = category.label.replace(/ Cards$/, "").toLowerCase();
   const threadNotice = tradeThreadId ? `\n\nBrowse all open ${tradeType} trades: <#${tradeThreadId}>` : "";
 
   return new EmbedBuilder()
     .setColor(Number.parseInt(category.accent.slice(1), 16))
-    .setTitle(`${matchingTrades.length} Potential Trade Match${matchingTrades.length === 1 ? "" : "es"}`)
+    .setTitle(`${category.label}: ${matchingTrades.length} Potential Match${matchingTrades.length === 1 ? "" : "es"}`)
     .setDescription(`${links.join("\n")}${overflowNotice}${threadNotice}`);
 }
 
-async function getTradeMatchEmojis(guildId: string): Promise<{ arrow: string; emojiByName: Map<string, string> }> {
+interface TradeMatchEmojis {
+  arrow: string;
+  emojiByName: Map<string, string>;
+}
+
+async function getTradeMatchEmojis(guildId: string): Promise<TradeMatchEmojis> {
   const emojiByName = new Map<string, string>();
   try {
     const guild = await client.guilds.fetch(guildId);
