@@ -213,7 +213,8 @@ async function handleFindMatchesCommand(interaction: ChatInputCommandInteraction
         trade.sending,
         getTradeThreadId(trade.channelId, trade.cardType),
         matchEmojis,
-        MAX_FIND_MATCH_LINKS
+        MAX_FIND_MATCH_LINKS,
+        false
       )
     );
   }
@@ -616,7 +617,8 @@ async function buildTradeMatchEmbed(
   offeredCardIds: readonly string[],
   tradeThreadId?: string,
   matchEmojis?: TradeMatchEmojis,
-  maximumLinks = MAX_MATCH_LINKS
+  maximumLinks = MAX_MATCH_LINKS,
+  showFindMatchesHint = true
 ): Promise<EmbedBuilder> {
   const category = CARD_CATALOG[cardType];
   const displayedTrades = matchingTrades.slice(0, maximumLinks);
@@ -640,7 +642,7 @@ async function buildTradeMatchEmbed(
     links.push(matchLink);
   }
   const overflowNotice = matchingTrades.length > links.length
-    ? `\n\n*Showing the first ${links.length} matches.* Use \`/trade find-matches\` to find more matches.`
+    ? `\n\n*Showing the first ${links.length} matches.*${showFindMatchesHint ? " Use `/trade find-matches` to find more matches." : ""}`
     : "";
   const tradeType = category.label.replace(/ Cards$/, "").toLowerCase();
   const threadNotice = tradeThreadId ? `\n\nBrowse all open ${tradeType} trades: <#${tradeThreadId}>` : "";
